@@ -128,7 +128,7 @@ def _analyse(trajectory_positions, coords0, box0, n_steps) -> dict:
 
 def run_md(*, protein_path, work_dir, steps=1000, temperature=310.0,
            platform=None, cpu_threads=8, seed=7, box_padding_nm=1.0,
-           store_every=25) -> MdResults:
+           store_every=25, max_protein_atoms=20000) -> MdResults:
     """Run a short explicit-solvent MD on the receptor and analyse stability.
 
     Returns a dict with analysis + reproducibility fields. This is CPU-safe
@@ -146,8 +146,24 @@ def run_md(*, protein_path, work_dir, steps=1000, temperature=310.0,
     plat = _pick_platform(platform, steps)
     log.info("MD platform=%s steps=%d T=%.1f box_pad=%.2f", plat, steps, temperature, box_padding_nm)
 
+    raw_atom_count = sum(
+        1 for line in Path(protein_path).read_text(errors="ignore").splitlines()
+        if line.startswith("ATOM  ")
+    )
+    if raw_atom_count > max_protein_atoms:
+        raise RuntimeError(
+            f"MD preflight refused {raw_atom_count} protein atoms; "
+            f"CPU safety budget is {max_protein_atoms}. Use a focused domain "
+            "structure or raise max_protein_atoms explicitly."
+        )
     modeller = _load_topology(protein_path)
     n_prot_atoms = modeller.topology.getNumAtoms()
+    if n_prot_atoms > max_protein_atoms:
+        raise RuntimeError(
+            f"MD preflight refused {n_prot_atoms} protein atoms; "
+            f"CPU safety budget is {max_protein_atoms}. Use a focused domain "
+            "structure or raise max_protein_atoms explicitly."
+        )
     ff = app.ForceField(_PF, _WF)
     modeller.addSolvent(ff, boxSize=None, padding=box_padding_nm * u.nanometer,
                         model="tip3p", ionicStrength=0.15 * u.molar,
@@ -171,9 +187,12 @@ def run_md(*, protein_path, work_dir, steps=1000, temperature=310.0,
     # dominate the drift metric.
     coords0 = coords0[:n_prot_atoms]
 
+    # Repaired crystal structures can retain severe local clashes. A 2-fs
+    # first step after a loose minimisation is enough to create NaNs, so use a
+    # conservative 0.5-fs integrator and staged temperature equilibration.
     integrator = openmm.LangevinMiddleIntegrator(
         temperature * u.kelvin, 1.0 / u.picosecond,
-        2.0 * u.femtosecond)
+        0.5 * u.femtosecond)
 
     if plat == "CUDA":
         prop = {"Precision": "mixed"}
@@ -181,14 +200,46 @@ def run_md(*, protein_path, work_dir, steps=1000, temperature=310.0,
         prop = {"Threads": str(cpu_threads)}
     simulation = app.Simulation(modeller.topology, system, integrator, platform=openmm.Platform.getPlatformByName(plat), platformProperties=prop)
 
-    # minimise thoroughly (PDBFixer-repaired side chains can clash; default
-    # maxIterations=0 = converge to tolerance, not iteration cap)
     simulation.context.setPositions(modeller.positions)
-    simulation.minimizeEnergy(tolerance=500.0 * u.kilojoule_per_mole / u.nanometer)
+    try:
+        # 10 kJ/mol/nm is materially stricter than the former 500 value;
+        # repaired side chains need the extra minimisation before dynamics.
+        simulation.minimizeEnergy(
+            tolerance=10.0 * u.kilojoule_per_mole / u.nanometer,
+            maxIterations=5000,
+        )
+    except openmm.OpenMMException as e:
+        raise RuntimeError(f"MD minimisation failed before dynamics: {e}") from e
 
-    # gentle equilibration before recording (Langevin thermostat settles
-    # repaired clashes; prevents mid-run NaN blow-ups)
-    simulation.step(250)
+    min_state = simulation.context.getState(getPositions=True)
+    min_positions = min_state.getPositions()
+    min_xyz = _xyz(min_positions)
+    if not np.isfinite(min_xyz).all():
+        raise RuntimeError("MD minimisation produced non-finite coordinates")
+
+    def _safe_step(n: int, phase: str) -> None:
+        try:
+            simulation.step(n)
+        except openmm.OpenMMException as e:
+            if "NaN" in str(e):
+                raise RuntimeError(
+                    f"MD integration diverged to NaN during {phase}; "
+                    "structure excluded from MD after deterministic repair/minimisation"
+                ) from e
+            raise
+        state = simulation.context.getState(getPositions=True)
+        xyz = _xyz(state.getPositions())
+        if not np.isfinite(xyz).all():
+            raise RuntimeError(f"MD produced non-finite coordinates during {phase}")
+
+    # Start cold and ramp to the requested temperature. This makes a failed
+    # structure a bounded, clearly-labelled experiment instead of a worker
+    # crash or an opaque 500 response.
+    simulation.context.setPositions(min_positions)
+    simulation.context.setVelocitiesToTemperature(50.0 * u.kelvin, seed)
+    for equil_temp in (50.0, 150.0, 250.0, float(temperature)):
+        integrator.setTemperature(equil_temp * u.kelvin)
+        _safe_step(100, f"equilibration at {equil_temp:.0f} K")
 
     # production trajectory (protein atoms only — water/ions excluded)
     simulation.reporters = []
@@ -196,15 +247,7 @@ def run_md(*, protein_path, work_dir, steps=1000, temperature=310.0,
     report_interval = max(steps // max(store_every, 1), 1)
     simulation.currentStep = 0
     for step in range(0, steps, report_interval):
-        try:
-            simulation.step(report_interval)
-        except openmm.OpenMMException as e:
-            if "NaN" in str(e):
-                raise RuntimeError(
-                    "MD integration diverged to NaN — structure likely contains "
-                    "an unresolvable clash after repair; increase equilibration "
-                    "or exclude this structure from MD") from e
-            raise
+        _safe_step(report_interval, "production")
         state = simulation.context.getState(getPositions=True, enforcePeriodicBox=False)
         pos = state.getPositions(asNumpy=True)
         frame = _xyz(pos)[:n_prot_atoms]
@@ -220,6 +263,8 @@ def run_md(*, protein_path, work_dir, steps=1000, temperature=310.0,
         "box_padding_nm": float(box_padding_nm),
         "explicit_solvent": "tip3p + 0.15M NaCl",
         "force_field": f"{_PF}+{_WF}",
+        "timestep_fs": 0.5,
+        "max_protein_atoms": int(max_protein_atoms),
         "steps_planned": steps,
         "runtime_s": round(elapsed, 1),
         "engine": "openmm",

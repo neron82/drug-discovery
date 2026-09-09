@@ -151,6 +151,7 @@ def run_md(session, ex, params: dict) -> dict:
         platform=params.get("platform"),
         cpu_threads=int(params.get("cpu_threads", 8)),
         seed=int(params.get("seed", 7)),
+        max_protein_atoms=int(params.get("max_protein_atoms", 20000)),
     )
 
     run = SimulationRun(
@@ -160,7 +161,9 @@ def run_md(session, ex, params: dict) -> dict:
         params_json={
             "steps": rec["steps_planned"], "temperature_K": rec["temperature_K"],
             "platform": rec["platform"], "box_padding_nm": rec["box_padding_nm"],
-            "force_field": rec["force_field"], "cpu_threads": params.get("cpu_threads", 8),
+            "force_field": rec["force_field"], "timestep_fs": rec.get("timestep_fs", 0.5),
+            "max_protein_atoms": rec.get("max_protein_atoms", 20000),
+            "cpu_threads": params.get("cpu_threads", 8),
         },
         seed=rec["seed"],
         receptor_hash=rec["protein_hash"], ligand_hash=None,
