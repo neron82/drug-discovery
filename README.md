@@ -48,14 +48,20 @@ uv venv .venv && uv pip install --python .venv/bin/python -e '.[dev]'
 # 1) initialise DB, create the MPB workspace and bootstrap it from REAL PubMed/EuropePMC data
 uv run python -m drugdiscovery.cli seed --extract 12
 
-# 2) start the API + dashboard
-uv run python -m drugdiscovery.cli serve --host 0.0.0.0 --port 8020
+# 2) start the API + dashboard (managed by the project wrapper)
+./scripts/dd-service.sh start
+./scripts/dd-service.sh status
 # open http://127.0.0.1:8020
 
-# 3) autonomous research: run N cycles now (or press ▶ Start in the UI)
-uv run python -m drugdiscovery.cli research --ws <WORKSPACE_ID> --cycles 5
-# continuous daemon:
-uv run python -m drugdiscovery.cli daemon --ws <WORKSPACE_ID>
+# 3) explicitly start/stop autonomous research for the MPB workspace
+./scripts/dd-service.sh research-start
+./scripts/dd-service.sh research-stop
+
+# one manual cycle without enabling continuous research
+./scripts/dd-service.sh cycle <WORKSPACE_ID>
+
+# continuous research is deliberately separate from the API service:
+# `start` starts only the API; `research-start` enables the loop.
 ```
 
 ## Configuration

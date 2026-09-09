@@ -169,7 +169,8 @@ def create_ws(body: WorkspaceIn):
 def list_ws():
     with get_session() as s:
         return [{"id": w.id, "name": w.name, "slug": w.slug, "disease": w.disease,
-                 "research_state": w.research_state, "n_papers": repos.paper_count(s, w.id)}
+                 "research_state": w.research_state, "research_enabled": w.research_enabled,
+                 "n_papers": repos.paper_count(s, w.id)}
                 for w in repos.list_workspaces(s)]
 
 
