@@ -96,6 +96,11 @@ def compounds_for_target_chembl(target_node, session, ws, max_n: int = 12) -> di
     """Autonomous compound discovery: ChEMBL activities measured against a target."""
     prov = ChEMBLProvider()
     target_name = target_node.canonical_name or target_node.label
+    # ChEMBL free-text search tokenises Greek letters away: "5α-reductase" matches
+    # bacterial/HMG-CoA reductases, "5-alpha-reductase" matches human SRD5A. Normalize.
+    _GREEK = {"α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "μ": "mu", "ω": "omega"}
+    for g, a in _GREEK.items():
+        target_name = target_name.replace(g, a)
     hits = prov.target_search(target_name)
     if not hits:
         # fall back: search by gene/protein alias
