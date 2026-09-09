@@ -480,6 +480,68 @@ def structure_file(sid: str):
     return FileResponse(r.file_path, media_type="chemical/x-cif", filename=f"{r.source_id}.cif")
 
 
+# ---------------------------------------------------------------------------
+# Simulation runs (Phase 4 docking)
+# ---------------------------------------------------------------------------
+@app.get("/api/workspaces/{ws_id}/simulations")
+def list_simulations(ws_id: str):
+    from .sim.runner import list_runs
+    from .models import Compound
+    with get_session() as s:
+        runs = list_runs(s, ws_id)
+        names = {}
+        for r in runs:
+            if r.compound_id:
+                c = s.get(Compound, r.compound_id)
+                names[r.compound_id] = c.canonical_name if c else None
+        return [
+            {
+                "id": r.id, "kind": r.kind, "software": r.software,
+                "software_version": r.software_version, "score": r.score,
+                "rmsd_lb": r.rmsd_lb, "seed": r.seed, "runtime_s": r.runtime_s,
+                "hardware": r.hardware, "status": r.status, "error": r.error,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "pose_path": r.pose_path, "params": r.params_json,
+                "structure_id": r.structure_id, "compound_id": r.compound_id,
+                "compound_name": names.get(r.compound_id),
+                "assumptions": r.assumptions,
+            }
+            for r in runs
+        ]
+
+
+@app.get("/api/simulations/{sid}")
+def simulation_detail(sid: str):
+    from .models import SimulationRun
+    with get_session() as s:
+        r = s.get(SimulationRun, sid)
+    if r is None:
+        raise HTTPException(404, "simulation run not found")
+    return {
+        "id": r.id, "kind": r.kind, "software": r.software,
+        "software_version": r.software_version, "score": r.score, "rmsd_lb": r.rmsd_lb,
+        "seed": r.seed, "receptor_hash": r.receptor_hash, "ligand_hash": r.ligand_hash,
+        "pose_path": r.pose_path, "runtime_s": r.runtime_s, "hardware": r.hardware,
+        "params": r.params_json, "assumptions": r.assumptions, "status": r.status,
+        "error": r.error, "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
+@app.get("/api/simulations/{sid}/pose")
+def simulation_pose(sid: str):
+    from .models import SimulationRun
+    from fastapi.responses import FileResponse
+    with get_session() as s:
+        r = s.get(SimulationRun, sid)
+    if r is None or not r.pose_path:
+        raise HTTPException(404, "pose not found")
+    import os
+    if not os.path.exists(r.pose_path):
+        raise HTTPException(404, "pose file missing on disk")
+    return FileResponse(r.pose_path, media_type="chemical/x-pdbqt",
+                        filename=f"{r.id[:8]}_pose.pdbqt")
+
+
 # static frontend
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

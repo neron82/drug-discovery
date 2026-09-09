@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from . import repos
 from .config import settings
-from .models import Experiment, Hypothesis, JobStatus, Node, Paper, Statement
+from .models import Compound, Experiment, Hypothesis, JobStatus, Node, Paper, Statement, Structure
 from sqlalchemy import func, select
 
 log = logging.getLogger("dd.planner")
@@ -176,6 +176,57 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         struct_made += 1
         if struct_made >= 2:
             break
+
+    # 5d) docking: compounds vs structurally-covered targets with a crystallised
+    #     ligand pocket. Scheduling at most a small batch per pipeline pass.
+    dock_made = 0
+    compounds = list(session.execute(select(Compound).order_by(Compound.created_at.asc()).limit(10)).scalars())
+    dockable = []
+    for t in n_targets:
+        # target has acquired structures, ideally with a co-crystal ligand
+        acq = (t.properties or {}).get("structural", {})
+        if not acq.get("acquired"):
+            continue
+        targets_for = [e.target for e in t.out_edges if e.target.kind in ("drug", "compound")]
+        targets_for += [e.source for e in t.in_edges if e.source.kind in ("drug", "compound")]
+        if not targets_for:
+            continue
+        # pick the best (earliest) acquired structure for this target
+        structure = session.execute(
+            select(Structure).where(Structure.workspace_id == ws_id,
+                                    Structure.protein_node_id == t.id)
+            .order_by(Structure.resolution.is_(None).asc(), Structure.resolution.asc())
+            .limit(1)).scalar_one_or_none()
+        if structure is None:
+            continue
+        ligands = structure.ligands or []
+        if not ligands:
+            continue
+        # a compound whose targets include this target
+        for c in compounds:
+            cid = c.id
+            if _already_queued(session, ws_id, "docking", {"structure_id": structure.id,
+                                                           "compound_id": cid}):
+                continue
+            dockable.append({"structure": structure, "compound": c,
+                             "target": t})
+            if len(dockable) >= 4:
+                break
+        if len(dockable) >= 4:
+            break
+    for d in dockable:
+        created.append(repos.create_experiment(
+            session, ws_id, "docking",
+            question=f"Virtual screening: {d['compound'].canonical_name} vs {d['target'].canonical_name}",
+            reason="Target has a crystallised ligand pocket and related chemical matter — "
+                   "docking predicts plausible binding geometry",
+            expected_information_gain=0.6, scientific_importance=0.6, confidence_impact=0.4,
+            computational_cost=0.9,
+            priority=compute_priority(weights, 0.6, 0.6, 0.4, 0.9),
+            params={"structure_id": d["structure"].id, "compound_id": d["compound"].id,
+                    "compound_smiles": d["compound"].canonical_smiles},
+            worker="simulation"))
+        dock_made += 1
 
     # 6) sustain the loop: when the queue is empty, deepen coverage on ligand-less
     #    top targets and the first open question (hysteresis via state['targeted_searches']).

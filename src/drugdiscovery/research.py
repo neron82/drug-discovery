@@ -183,6 +183,19 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
                            {"acquired_new": n_new})
         return (f"structures: {n_new} new from {rep.get('targets_scanned', 0)} targets", rep)
 
+    if kind == "docking":
+        from .sim import runner as sim_runner
+        after = dict(ex.result_json or {})
+        rep = sim_runner.run_docking(session, ex, params)
+        after.update({"simulation_run_id": rep["simulation_run_id"],
+                      "score": rep["score"]})
+        repos.add_timeline(
+            session, ws.id, "simulation", "result",
+            f"Docking: {rep['score']:.2f} kcal/mol ({ex.params_json.get('compound_id', '?')} "
+            f"vs {rep['structure_source'] if 'structure_source' in rep else 'target'})",
+            {"score": rep["score"], "simulation_run_id": rep["simulation_run_id"]})
+        return (rep["summary"], after)
+
     return f"Unhandled experiment kind: {kind}", {}
 
 

@@ -138,6 +138,7 @@ function bindView(view){
   if (view==="map") initGraph();
   if (view==="compounds") bindCompound();
   if (view==="structures") bindStructures();
+  if (view==="simulations") bindSimulations();
   if (view==="literature") bindLiterature();
 }
 function initGraph(){
@@ -296,7 +297,48 @@ function bindStructures(){
   if(c) c.onclick = ()=> document.getElementById('viewer-modal').hidden = true;
 }
 
-async function renderSimulations(){ return `<h1>Simulations</h1><div class="sub">Phase 4 module · docking (Vina/smina), MD (OpenMM). Queued simulation-type experiments appear here.</div><div class="placeholder">Scheduled for Phase 4</div>`; }
+async function renderSimulations(){
+  const R = await api(`/workspaces/${state.ws.id}/simulations`);
+  const rows = R.length ? R.map(r=>`<div class="struct-card">
+    <div class="struct-head"><span class="badge ${r.kind==='docking'?'established':'speculative'}">${esc(r.kind)}</span>
+      <b>${esc(r.compound_name||'compound')}</b> &middot; ${esc(r.software)} ${esc(r.software_version)}</div>
+    <div class="meta">score ${r.score!=null?r.score.toFixed(2)+' kcal/mol':'—'} &middot; seed ${r.seed} &middot; ${r.runtime_s?r.runtime_s.toFixed(1)+'s':''} &middot; ${esc(r.hardware||'')} &middot; status ${esc(r.status)}</div>
+    ${r.error?`<div class="lim">${esc(r.error)}</div>`:''}
+    ${r.assumptions?`<div class="lim">${esc(r.assumptions)}</div>`:''}
+    <button class="btn viewpose" data-sid="${r.id}" ${r.pose_path?'':'disabled'}>${r.pose_path?'View pose in 3D':'no pose'}</button>
+  </div>`).join('') : `<div class="placeholder">No simulation runs yet — the research director schedules docking against structurally-covered targets during research cycles.</div>`;
+  return `<h1>Simulations</h1>
+    <div class="sub">Computational predictions — docking scores are NOT proof of biological activity. Each run records full reproducibility (software, version, seed, input hashes, pose artifact, runtime, hardware).</div>
+    <div class="struct-grid">${rows}</div>
+    <div id="pose-modal" class="modal" hidden><div class="modal-box">
+      <div class="modal-head"><span id="pose-title"></span><button class="btn" id="pose-close">Close</button></div>
+      <div id="pose-3d" class="viewer-3d"></div>
+      <div class="modal-foot">Predicted pose (PDBQT) &mdash; docking prediction only.</div>
+    </div></div>`;
+}
+async function openPoseViewer(sid, label){
+  const modal = document.getElementById('pose-modal');
+  modal.hidden = false;
+  document.getElementById('pose-title').textContent = label+' — predicted pose';
+  const holder = document.getElementById('pose-3d');
+  holder.innerHTML = "<div class='muted'>Loading viewer…</div>";
+  try{
+    await load3dmol();
+    const meta = await api(`/simulations/${sid}`);
+    const txt = await (await fetch(`/simulations/${sid}/pose`)).text();
+    holder.innerHTML = '';
+    const viewer = $3Dmol.createViewer(holder, {backgroundColor:'#0d1117'});
+    viewer.addModel(txt, "pdbqt");
+    viewer.setStyle({}, {stick:{radius:0.22}, sphere:{radius:0.65}});
+    viewer.setStyle({hetflag:false}, {sphere:{colorscheme:'Jmol'}});
+    viewer.zoomTo(); viewer.render(); viewer.zoom(1.0); viewer.render();
+  }catch(e){ holder.innerHTML = "<div class='muted'>pose viewer error: "+esc(String(e.message||e))+"</div>"; }
+}
+function bindSimulations(){
+  document.querySelectorAll('.viewpose').forEach(b=> { if(!b.disabled) b.onclick = ()=> openPoseViewer(b.dataset.sid, b.textContent.trim()); });
+  const c = document.getElementById('pose-close');
+  if(c) c.onclick = ()=> document.getElementById('pose-modal').hidden = true;
+}
 
 async function renderLiterature(){
   if (!state.ws) return "<div class='placeholder'>No workspace.</div>";

@@ -49,6 +49,7 @@ class StorageConfig(BaseModel):
     db_path: str = "./data/research.db"
     artifact_dir: str = "./data/artifacts"
     log_dir: str = "./logs"
+    venv_bin: str = "./.venv/bin"
 
 
 class APIConfig(BaseModel):
@@ -113,6 +114,9 @@ def load_settings() -> Settings:
         db_path=_resolve_rel(e("SQLITE_PATH", st.get("db_path", "./data/research.db")), base),
         artifact_dir=_resolve_rel(st.get("artifact_dir", "./data/artifacts"), base),
         log_dir=_resolve_rel(st.get("log_dir", "./logs"), base),
+        venv_bin=_resolve_rel(
+            e("VENV_BIN", str(Path(base) / ".venv" / "bin")), Path(base),
+        ),
     )
     ap = cfg.get("api", {})
     api_c = APIConfig(host=e("API_HOST", ap.get("host", "0.0.0.0")), port=int(e("API_PORT", ap.get("port", "8020"))))

@@ -407,3 +407,33 @@ class Structure(Base):
     file_hash: Mapped[str] = mapped_column(String(64), default="")   # sha256 of file
     limitations: Mapped[str] = mapped_column(Text, default="")
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+
+# ---------------------------------------------------------------------------
+# Simulation runs (Phase 4) — reproducible records of computational experiments
+# ---------------------------------------------------------------------------
+class SimulationRun(Base):
+    __tablename__ = "simulation_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(24), index=True)          # docking | md
+    experiment_id: Mapped[str | None] = mapped_column(ForeignKey("experiments.id", ondelete="SET NULL"), nullable=True, index=True)
+    structure_id: Mapped[str | None] = mapped_column(ForeignKey("structures.id", ondelete="SET NULL"), nullable=True, index=True)
+    compound_id: Mapped[str | None] = mapped_column(ForeignKey("compounds.id", ondelete="SET NULL"), nullable=True, index=True)
+    software: Mapped[str] = mapped_column(String(40), default="")      # e.g. autodock-vina
+    software_version: Mapped[str] = mapped_column(String(24), default="")
+    params_json: Mapped[dict] = mapped_column(JSON, default=dict)      # pocket box, exhaustiveness...
+    seed: Mapped[int] = mapped_column(Integer, default=0)
+    receptor_hash: Mapped[str] = mapped_column(String(64), default="") # sha256 of prepared receptor
+    ligand_hash: Mapped[str] = mapped_column(String(64), default="")   # sha256 of ligand molblock
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)  # docking score (kcal/mol)
+    rmsd_lb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pose_path: Mapped[str] = mapped_column(String(500), default="")    # output pose artifact
+    runtime_s: Mapped[float] = mapped_column(Float, default=0.0)
+    hardware: Mapped[str] = mapped_column(String(80), default="")      # cpu model / device
+    assumptions: Mapped[str] = mapped_column(Text, default="")         # protonation, tautomer caveats
+    status: Mapped[str] = mapped_column(String(16), default=JobStatus.DONE.value)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
