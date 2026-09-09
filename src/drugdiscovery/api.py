@@ -119,7 +119,9 @@ def status():
     return {"service": "drug-discovery", "version": __version__,
             "llm": caps, "embeddings": {"enabled": settings.embeddings.enabled},
             "storage": {"db": settings.storage.db_path}, "workspaces": n_ws,
-            "active_research_loops": len(_running_tasks)}
+            "active_research_loops": len(_running_tasks),
+            "budgets": {"max_lit_requests_per_hour": settings.budgets.max_lit_requests_per_hour,
+                        "max_simulations_per_hour": settings.budgets.max_simulations_per_hour}}
 
 
 @app.post("/api/workspaces", status_code=201)

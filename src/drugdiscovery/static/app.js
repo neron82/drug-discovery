@@ -555,7 +555,19 @@ async function renderSystem(){
     <div class="card"><div class="k">Workspaces</div><div class="big">${s.workspaces}</div></div>
     <div class="card"><div class="k">Active research loops</div><div class="big">${s.active_research_loops}</div></div>
   </div>
-  <div class="card" style="margin-top:12px"><div class="k">Storage</div><div class="mono small" style="margin-top:6px">${esc(s.storage?.db||"—")}</div></div>`;
+  <div class="card" style="margin-top:12px"><div class="k">Storage</div><div class="mono small" style="margin-top:6px">${esc(s.storage?.db||"—")}</div></div>
+  ${await budgetPanel()}`;
+}
+async function budgetPanel(){
+  if(!state.ws) return "";
+  let w; try{ w = await api(`/workspaces/${state.ws.id}`); }catch(e){ return ""; }
+  const st = w.state||{}; const b = st.budget||{}; const ctr = st.counters||{};
+  const lim = s.budgets||{};
+  const pct=(n,m)=> m? Math.min(100,Math.round(100*(n||0)/m))+"%" : "∞";
+  return `<div class="card" style="margin-top:12px"><div class="k">Compute budget (rolling 1h) — ${esc(w.name)}</div>
+    <div class="kvrow"><span class="k">literature</span><span class="mono">${b.lit||0} / ${lim.max_lit_requests_per_hour??"∞"} (${pct(b.lit,lim.max_lit_requests_per_hour)})</span></div>
+    <div class="kvrow"><span class="k">simulations</span><span class="mono">${b.sim||0} / ${lim.max_simulations_per_hour||"∞"} (${pct(b.sim,lim.max_simulations_per_hour)})</span></div>
+    <div class="kvrow"><span class="k">cycles total</span><span class="mono">${ctr.cycles||0}</span></div></div>`;
 }
 
 /* ---------------- activity panel ---------------- */

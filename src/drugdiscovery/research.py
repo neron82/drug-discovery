@@ -256,6 +256,48 @@ def derive_open_questions(session, ws) -> list[str]:
 # ---------------------------------------------------------------------------
 # Cycle + runner
 # ---------------------------------------------------------------------------
+# --- compute budgets (spec 29) ---------------------------------------------
+_LIT_KINDS = {"literature_search", "paper_extraction", "contradiction_search"}
+_SIM_KINDS = {"docking", "molecular_dynamics", "structure_analysis"}
+
+
+def _budget_gate(ws, kind: str) -> str | None:
+    """Rolling 1-hour budget check against ws.state_json counters.
+    Returns None if allowed, else the reason string."""
+    b = settings.budgets
+    state = dict(ws.state_json or {})
+    bud = state.setdefault("budget", {"window_start": _utc_iso(), "lit": 0, "sim": 0})
+    from datetime import datetime, timezone, timedelta
+    try:
+        start = datetime.fromisoformat(bud.get("window_start", ""))
+    except Exception:
+        start = datetime.now(timezone.utc); bud["window_start"] = _utc_iso(); bud["lit"] = 0; bud["sim"] = 0
+    if datetime.now(timezone.utc) - start > timedelta(hours=1):
+        bud["window_start"] = _utc_iso(); bud["lit"] = 0; bud["sim"] = 0
+    ws.state_json = state
+    if kind in _LIT_KINDS and b.max_lit_requests_per_hour and bud["lit"] >= b.max_lit_requests_per_hour:
+        return f"literature budget exhausted ({b.max_lit_requests_per_hour}/h)"
+    if kind in _SIM_KINDS and b.max_simulations_per_hour and bud["sim"] >= b.max_simulations_per_hour:
+        return f"simulation budget exhausted ({b.max_simulations_per_hour}/h)"
+    return None
+
+
+def _budget_record(ws, kind: str) -> None:
+    state = dict(ws.state_json or {})
+    bud = state.get("budget") or {"window_start": _utc_iso(), "lit": 0, "sim": 0}
+    if kind in _LIT_KINDS:
+        bud["lit"] = bud.get("lit", 0) + 1
+    if kind in _SIM_KINDS:
+        bud["sim"] = bud.get("sim", 0) + 1
+    state["budget"] = bud
+    ws.state_json = state
+
+
+def _utc_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False) -> dict:
     """One research cycle. Returns a summary dict (or {"noop": true})."""
     from . import planner
@@ -275,6 +317,12 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False) -
             log.info("WS %s: queue empty", ws_id)
             return {"noop": True, "reason": "queue empty"}
 
+        # compute budget (spec 29): skip over-budget kinds, keep them queued
+        blocked = _budget_gate(ws, ex.kind)
+        if blocked and not force:
+            return {"noop": True, "reason": blocked}
+
+        _budget_record(ws, ex.kind)
         repos.mark_experiment(session, ex, JobStatus.RUNNING.value, worker=ex.worker)
         summary, result, error = "", {}, ""
         started = time.time()

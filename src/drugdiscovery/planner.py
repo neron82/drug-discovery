@@ -253,7 +253,8 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
     crit_h = list(session.execute(
         select(Hypothesis).where(
             Hypothesis.workspace_id == ws_id,
-            Hypothesis.status.in_(["active", "promising"]))
+            Hypothesis.status.in_(["active", "promising"]),
+            Hypothesis.confidence > 0.1)   # fully-weakened hypotheses stay refuted, no re-critique loop
         .order_by(Hypothesis.confidence.desc()).limit(3)).scalars())
     for h in crit_h:
         last = (h.evidence_profile or {}).get("last_critique", {})
