@@ -209,7 +209,8 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
         else:
             res = critique.critique_active(session, ws, llm, limit=int(params.get("limit", 3)))
             summary = f"Skeptic pass: {len(res)} reviewed"
-        return (summary, {"results": res[:3]})
+            res = res[:3]   # list branch: cap payload; dict branch passes through
+        return (summary, {"results": res})
 
     return f"Unhandled experiment kind: {kind}", {}
 
