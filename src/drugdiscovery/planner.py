@@ -267,6 +267,11 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
     for sid, best in md_candidates:
         if _already_queued(session, ws_id, "molecular_dynamics", {"structure_id": sid}):
             continue
+        done_md = session.execute(select(func.count()).select_from(SimulationRun).where(
+            SimulationRun.structure_id == sid,
+            SimulationRun.kind == "md", SimulationRun.status == "done")).scalar_one()
+        if done_md:
+            continue
         created.append(repos.create_experiment(
             session, ws_id, "molecular_dynamics",
             question=f"Pose persistence / pocket thermal stability: {sid[:8]}",
