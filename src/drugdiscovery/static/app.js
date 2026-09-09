@@ -319,14 +319,18 @@ async function renderCandidates(){
 
 async function renderSimulations(){
   const R = await api(`/workspaces/${state.ws.id}/simulations`);
-  const rows = R.length ? R.map(r=>`<div class="struct-card">
-    <div class="struct-head"><span class="badge ${r.kind==='docking'?'established':'speculative'}">${esc(r.kind)}</span>
-      <b>${esc(r.compound_name||'compound')}</b> &middot; ${esc(r.software)} ${esc(r.software_version)}</div>
-    <div class="meta">score ${r.score!=null?r.score.toFixed(2)+' kcal/mol':'—'} &middot; seed ${r.seed} &middot; ${r.runtime_s?r.runtime_s.toFixed(1)+'s':''} &middot; ${esc(r.hardware||'')} &middot; status ${esc(r.status)}</div>
+  const rows = R.length ? R.map(r=>{
+    const isMd = r.kind==='md';
+    const unit = isMd ? 'nm' : 'kcal/mol';
+    const label = isMd ? 'stability (RMSD)' : 'score';
+    return `<div class="struct-card">
+    <div class="struct-head"><span class="badge ${isMd?'speculative':'established'}">${esc(r.kind)}</span>
+      <b>${esc(r.compound_name||'protein')}</b> &middot; ${esc(r.software)} ${esc(r.software_version)}</div>
+    <div class="meta">${label} ${r.score!=null?r.score.toFixed(3)+' '+unit:'—'} &middot; seed ${r.seed} &middot; ${r.runtime_s?r.runtime_s.toFixed(1)+'s':''} &middot; ${esc(r.hardware||'')} &middot; status ${esc(r.status)}</div>
     ${r.error?`<div class="lim">${esc(r.error)}</div>`:''}
     ${r.assumptions?`<div class="lim">${esc(r.assumptions)}</div>`:''}
-    <button class="btn viewpose" data-sid="${r.id}" ${r.pose_path?'':'disabled'}>${r.pose_path?'View pose in 3D':'no pose'}</button>
-  </div>`).join('') : `<div class="placeholder">No simulation runs yet — the research director schedules docking against structurally-covered targets during research cycles.</div>`;
+    <button class="btn viewpose" data-sid="${r.id}" ${isMd||!r.pose_path?'disabled':''}>${isMd?'trajectory (npz)':'View pose in 3D'}</button>
+  </div>`}).join('') : `<div class="placeholder">No simulation runs yet — the research director schedules docking against structurally-covered targets during research cycles.</div>`;
   return `<h1>Simulations</h1>
     <div class="sub">Computational predictions — docking scores are NOT proof of biological activity. Each run records full reproducibility (software, version, seed, input hashes, pose artifact, runtime, hardware).</div>
     <div class="struct-grid">${rows}</div>

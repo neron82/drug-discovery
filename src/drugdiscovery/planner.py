@@ -254,6 +254,30 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             params={"hypothesis_id": h.id},
             worker="skeptic"))
 
+    # 5f) molecular dynamics: expensive secondary validation, gated to the
+    # top-scoring docked structures (spec §11 — never applied indiscriminately).
+    from .models import SimulationRun
+    md_sel = session.execute(
+        select(SimulationRun.structure_id, func.min(SimulationRun.score))
+        .where(SimulationRun.kind == "docking", SimulationRun.status == "done")
+        .group_by(SimulationRun.structure_id)
+        .having(func.min(SimulationRun.score) <= -5.0)
+        .order_by(func.min(SimulationRun.score).asc()).limit(2)).all()
+    md_candidates = [(sid, round(score, 2)) for sid, score in md_sel if sid]
+    for sid, best in md_candidates:
+        if _already_queued(session, ws_id, "molecular_dynamics", {"structure_id": sid}):
+            continue
+        created.append(repos.create_experiment(
+            session, ws_id, "molecular_dynamics",
+            question=f"Pose persistence / pocket thermal stability: {sid[:8]}",
+            reason=f"Docking scored {best} kcal/mol — validate the pose and binding-"
+                   "pocket stability under explicit-solvent dynamics, and record pocket "
+                   "flexibility for candidate prioritisation",
+            expected_information_gain=0.55, scientific_importance=0.7,
+            confidence_impact=0.5, computational_cost=0.9,
+            priority=compute_priority(weights, 0.55, 0.7, 0.5, 0.9),
+            params={"structure_id": sid}, worker="simulation"))
+
     # 6) sustain the loop: when the queue is empty, deepen coverage on ligand-less
     #    top targets and the first open question (hysteresis via state['targeted_searches']).
     queued_now = session.execute(select(func.count()).select_from(Experiment).where(

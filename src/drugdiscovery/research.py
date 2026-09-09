@@ -196,6 +196,16 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
             {"score": rep["score"], "simulation_run_id": rep["simulation_run_id"]})
         return (rep["summary"], after)
 
+    if kind == "molecular_dynamics":
+        from .sim import runner as sim_runner
+        rep = sim_runner.run_md(session, ex, params)
+        repos.add_timeline(
+            session, ws.id, "simulation", "result",
+            f"MD: {rep['summary']}", {"simulation_run_id": rep["simulation_run_id"]})
+        after = dict(ex.result_json or {})
+        after.update({"simulation_run_id": rep["simulation_run_id"]})
+        return (rep["summary"], after)
+
     if kind == "hypothesis_critique":
         from . import critique
         if llm is None:

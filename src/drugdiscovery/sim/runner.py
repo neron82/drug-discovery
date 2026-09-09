@@ -118,6 +118,61 @@ def run_docking(session, ex, params: dict) -> dict:
             "summary": summary, "pose_path": record["pose_path"]}
 
 
+def run_md(session, ex, params: dict) -> dict:
+    """Execute a protein-stability MD experiment. params: structure_id,
+    steps, temperature, platform(optional), cpu_threads, seed.
+    Returns a summary + SimulationRun record (kind='md')."""
+    structure_id = params.get("structure_id")
+    structure = session.get(Structure, structure_id)
+    if structure is None or not structure.file_path or not Path(structure.file_path).exists():
+        raise ValueError(f"structure not usable for MD: {structure_id}")
+
+    run_dir = (Path(settings.storage.artifact_dir) / "md" /
+               f"{structure.source_id}_{ex.id[:8]}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    from . import prepare_receptor
+    protein_pdb = run_dir / "protein.pdb"
+    prepare_receptor(structure.file_path, protein_pdb)
+
+    from . import md as md_eng
+    rec = md_eng.run_md(
+        protein_path=protein_pdb, work_dir=str(run_dir),
+        steps=int(params.get("steps", 1000)),
+        temperature=float(params.get("temperature", 310.0)),
+        platform=params.get("platform"),
+        cpu_threads=int(params.get("cpu_threads", 8)),
+        seed=int(params.get("seed", 7)),
+    )
+
+    run = SimulationRun(
+        workspace_id=ex.workspace_id, kind="md", experiment_id=ex.id,
+        structure_id=structure_id, compound_id=None,
+        software=rec["engine"], software_version=rec.get("engine_version"),
+        params_json={
+            "steps": rec["steps_planned"], "temperature_K": rec["temperature_K"],
+            "platform": rec["platform"], "box_padding_nm": rec["box_padding_nm"],
+            "force_field": rec["force_field"], "cpu_threads": params.get("cpu_threads", 8),
+        },
+        seed=rec["seed"],
+        receptor_hash=rec["protein_hash"], ligand_hash=None,
+        score=rec.get("backbone_rmsd_nm"),
+        pose_path=rec.get("trajectory_path"), runtime_s=rec["runtime_s"],
+        hardware=rec["hardware"], assumptions=rec.get("limitations", ""),
+    )
+    session.add(run); session.flush()
+
+    summary = (f"MD {structure.source_id}: RMSD {rec['backbone_rmsd_nm']} nm "
+               f"drift {rec['final_drift_nm']} nm, RMSF p95 {rec['rmsf_p95_nm']} nm "
+               f"({rec['runtime_s']:.0f}s, {rec['platform']})")
+    ex.result_summary = summary
+    ex.result_json = {"simulation_run_id": run.id, "score": rec.get("backbone_rmsd_nm"),
+                      "analysis": rec.get("analysis"), "structure_id": structure_id}
+    session.flush()
+    return {"simulation_run_id": run.id, "summary": summary,
+            "score": rec.get("backbone_rmsd_nm")}
+
+
 def list_runs(session, workspace_id: str):
     from ..models import SimulationRun
     _ensure_run_columns(session)
