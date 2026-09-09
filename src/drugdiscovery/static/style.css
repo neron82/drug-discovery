@@ -138,3 +138,10 @@ tr:hover td{background:var(--bg2)}
 .dimbar{flex:1;height:6px;background:#1c2230;border-radius:3px;overflow:hidden}
 .dimbar i{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#22d3ee)}
 .dimval{width:34px;text-align:right;color:#cfd8e6;font-variant-numeric:tabular-nums}
+
+/* node card */
+.kvrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;font-size:12px}
+.kvrow .k{color:#8b949e;text-transform:uppercase;font-size:10px;letter-spacing:.06em}
+.stmt{border-left:2px solid #30363d;padding:6px 10px;margin:6px 0;font-size:12px;color:#c9d1d9}
+.paperline{margin:6px 0;font-size:12px}
+.modal-box h3{margin:14px 0 6px;font-size:13px;color:#d7ddee}

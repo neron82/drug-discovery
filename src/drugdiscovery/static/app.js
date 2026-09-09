@@ -135,8 +135,33 @@ async function renderMapPromise(){
   <div class="sub small" style="margin-top:8px">Colors: ${Object.entries(KIND_COLOR).slice(0,14).map(([k,c])=>`<span class="badge" style="color:${c};border-color:${c}">${k}</span>`).join(" ")}</div>`;
 }
 
+async function openNodeCard(nid){
+  const modal=document.getElementById("node-modal"); modal.hidden=false;
+  const body=document.getElementById("node-body");
+  body.innerHTML="<div class='muted'>Loading research card…</div>";
+  try{
+    const c=await api(`/nodes/${nid}`);
+    document.getElementById("node-title").textContent=c.name+" ("+c.kind+")";
+    const prov=e=>(e.provenance&&e.provenance.length)?e.provenance.map(p=>p.paper_id?p.paper_id.slice(0,8):(p.kind||"prov")).join(", "):"—";
+    const edges=c.edges.map(e=>"<tr><td>"+(e.direction==="out"?"→":"←")+" <b>"+esc(e.neighbor)+"</b> <span class='badge'>"+esc(e.neighbor_kind)+"</span></td><td class='mono'>"+esc(e.type)+"</td><td>"+badge(e.evidence_level)+"</td><td class='small'>"+esc(e.knowledge_type)+"</td><td class='small mono'>"+esc(prov(e))+"</td></tr>").join("");
+    const stmts=c.statements.map(s=>"<div class='stmt'><span class='badge'>"+esc(s.claim_type)+"</span> "+esc(s.text)+"</div>").join("");
+    const papers=c.papers.map(p=>"<div class='paperline'><b>"+esc(p.title)+"</b> <span class='muted small'>"+esc(p.journal||"")+" "+(p.pmid?("PMID:"+p.pmid):"")+" "+(p.doi?("DOI:"+p.doi):"")+"</span></div>").join("");
+    let html="";
+    html+="<div class='kvrow'><span class='k'>evidence</span>"+badge(c.evidence_level)+" <span class='k'>knowledge_type</span><span class='mono'>"+esc(c.knowledge_type)+"</span> <span class='k'>conf</span>"+c.confidence+"</div>";
+    if(c.summary) html+="<div class='stmt'>"+esc(c.summary)+"</div>";
+    if(c.synonyms&&c.synonyms.length) html+="<div class='small muted'>synonyms: "+c.synonyms.map(esc).join(", ")+"</div>";
+    if(c.compound) html+="<div class='kvrow'><span class='k'>compound</span><span class='mono'>"+esc(c.compound.name)+"</span> <span class='badge'>"+esc(c.compound.status)+"</span></div>";
+    if(c.structures.length) html+="<div class='kvrow'><span class='k'>structures</span>"+c.structures.map(s=>"<span class='badge'>"+esc(s.source_id)+" ("+esc(s.source)+")</span>").join(" ")+"</div>";
+    html+="<h3>Edges ("+c.edges.length+")</h3><table><thead><tr><th>Neighbor</th><th>Type</th><th>Level</th><th>Knowledge</th><th>Provenance</th></tr></thead><tbody>"+(edges||"<tr><td colspan=5 class=muted>none</td></tr>")+"</tbody></table>";
+    html+="<h3>Statements ("+c.statements.length+")</h3>"+(stmts||"<div class='muted'>none</div>");
+    html+="<h3>Papers ("+c.papers.length+")</h3>"+(papers||"<div class='muted'>none</div>");
+    body.innerHTML=html;
+  }catch(err){ body.innerHTML="<div class='muted'>card error: "+esc(String(err.message||err))+"</div>"; }
+}
+
 function bindView(view){
   if (view==="map") initGraph();
+  const nc = $("#node-close"); if (nc) nc.onclick = ()=> $("#node-modal").hidden = true;
   if (view==="compounds") bindCompound();
   if (view==="structures") bindStructures();
   if (view==="simulations") bindSimulations();
@@ -158,6 +183,7 @@ function initGraph(){
       layout:{improvedLayout:true}
     });
     net.once("stabilizationIterationsDone", ()=> net.setOptions({physics:false}));
+    net.on("click", p=>{ if(p.nodes && p.nodes.length) openNodeCard(p.nodes[0]); });
   });
 }
 

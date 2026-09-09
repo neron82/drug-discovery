@@ -187,6 +187,65 @@ def graph(ws_id: str):
         return repos.graph_projection(s, ws_id)
 
 
+
+
+@app.get("/api/nodes/{node_id}")
+def node_card(node_id: str):
+    """Node research card (spec 25): fields, typed edges w/ provenance, statements, papers."""
+    from .models import Node, Edge, Statement, Paper, Compound, Structure
+    from sqlalchemy import select
+    with get_session() as s:
+        n = s.get(Node, node_id)
+        if n is None:
+            raise HTTPException(404, "node not found")
+        edges = s.execute(select(Edge).where(
+            (Edge.source_id == node_id) | (Edge.target_id == node_id))).scalars().all()
+        stmts = s.execute(select(Statement).where(
+            Statement.workspace_id == n.workspace_id,
+            (Statement.subject.ilike(n.canonical_name)) |
+            (Statement.object.ilike(n.canonical_name)))).scalars().all()
+        paper_ids = sorted({st.source_paper_id for st in stmts if st.source_paper_id})
+        papers = []
+        if paper_ids:
+            for p in s.execute(select(Paper).where(Paper.id.in_(paper_ids))).scalars():
+                papers.append({"id": p.id, "title": p.title[:180], "journal": p.journal,
+                               "pmid": p.pmid, "doi": p.doi})
+        compound = None
+        cid = (n.properties or {}).get("compound_id")
+        if cid:
+            c = s.get(Compound, cid)
+            if c:
+                compound = {"id": c.id, "name": c.canonical_name,
+                            "smiles": c.canonical_smiles, "status": c.research_status}
+        structures = [{"id": st.id, "source": st.source, "source_id": st.source_id,
+                       "resolution": st.resolution}
+                      for st in s.execute(select(Structure).where(
+                          Structure.protein_node_id == node_id)).scalars()]
+        def _nbr(e):
+            t = e.target if e.source_id == node_id else e.source
+            return {"neighbor_id": t.id, "neighbor": t.label or t.canonical_name,
+                    "neighbor_kind": t.kind,
+                    "direction": "out" if e.source_id == node_id else "in"}
+        return {
+            "id": n.id, "kind": n.kind, "name": n.canonical_name,
+            "label": n.label or n.canonical_name, "synonyms": n.synonyms,
+            "summary": n.summary, "properties": n.properties,
+            "knowledge_type": n.knowledge_type, "evidence_level": n.evidence_level,
+            "confidence": round(n.confidence, 3),
+            "edges": [{**_nbr(e), "id": e.id, "type": e.type,
+                       "knowledge_type": e.knowledge_type,
+                       "evidence_level": e.evidence_level,
+                       "confidence": round(e.confidence, 3),
+                       "provenance": e.provenance or []} for e in edges],
+            "statements": [{"id": st.id, "text": st.text, "claim_type": st.claim_type,
+                            "relation": st.relation, "subject": st.subject,
+                            "object": st.object, "direction": st.direction,
+                            "evidence_level": st.evidence_level,
+                            "paper_id": st.source_paper_id} for st in stmts][:40],
+            "papers": papers, "compound": compound, "structures": structures,
+        }
+
+
 @app.get("/api/workspaces/{ws_id}/papers")
 def papers(ws_id: str, status: Optional[str] = Query(None)):
     from .models import Paper
