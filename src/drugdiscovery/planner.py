@@ -31,10 +31,13 @@ def compute_priority(weights, eig=0.0, importance=0.0, confimpact=0.0, cost=1.0)
                  / cost, 4)
 
 
-def _already_queued(session, ws_id, kind, params_key):
+def _already_queued(session, ws_id, kind, params_key, terminal=False):
+    statuses = [JobStatus.QUEUED.value, JobStatus.RUNNING.value]
+    if terminal:
+        statuses += [JobStatus.DONE.value]
     rows = session.execute(select(Experiment).where(
         Experiment.workspace_id == ws_id, Experiment.kind == kind,
-        Experiment.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]),
+        Experiment.status.in_(statuses),
     )).scalars().all()
     for r in rows:
         if _params_key(r.params_json or {}) == params_key:
@@ -105,7 +108,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
     to_extract = [p for p in papers if p.status == "fetched"][:10]
     for p in to_extract:
         pk = _params_key({"paper_id": p.id})
-        if _already_queued(session, ws_id, "paper_extraction", pk):
+        if _already_queued(session, ws_id, "paper_extraction", pk, terminal=True):
             continue
         created.append(repos.create_experiment(
             session, ws_id, "paper_extraction", question=f"Extract claims: {p.title[:60]}…",
@@ -163,7 +166,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         if has_compound:
             continue
         pk = _params_key({"target_node_id": t.id})
-        if _already_queued(session, ws_id, "compound_discovery", pk):
+        if _already_queued(session, ws_id, "compound_discovery", pk, terminal=True):
             continue
         created.append(repos.create_experiment(
             session, ws_id, "compound_discovery", question=f"Chemical matter for {t.canonical_name}",
@@ -181,7 +184,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         if (t.properties or {}).get("structural", {}).get("acquired"):
             continue
         pk = _params_key({"node_id": t.id})
-        if _already_queued(session, ws_id, "structure_analysis", pk):
+        if _already_queued(session, ws_id, "structure_analysis", pk, terminal=True):
             continue
         created.append(repos.create_experiment(
             session, ws_id, "structure_analysis", question=f"Structural coverage for {t.canonical_name}",
@@ -220,7 +223,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         for c in compounds:
             cid = c.id
             if _already_queued(session, ws_id, "docking", {"structure_id": structure.id,
-                                                           "compound_id": cid}):
+                                                           "compound_id": cid}, terminal=True):
                 continue
             dockable.append({"structure": structure, "compound": c,
                              "target": t})
@@ -285,7 +288,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         .order_by(func.min(SimulationRun.score).asc()).limit(2)).all()
     md_candidates = [(sid, round(score, 2)) for sid, score in md_sel if sid]
     for sid, best in md_candidates:
-        if _already_queued(session, ws_id, "molecular_dynamics", {"structure_id": sid}):
+        if _already_queued(session, ws_id, "molecular_dynamics", {"structure_id": sid}, terminal=True):
             continue
         done_md = session.execute(select(func.count()).select_from(SimulationRun).where(
             SimulationRun.structure_id == sid,
