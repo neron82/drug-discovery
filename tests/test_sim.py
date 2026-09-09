@@ -65,6 +65,28 @@ def test_pocket_from_real_ligand():
     assert pocket["size"] > 0
 
 
+def test_pocket_blind_any_structure():
+    """Blind box works WITHOUT ligands (generalisation path); protein-only."""
+    from drugdiscovery.sim import pocket_blind
+    st = _any_structure()
+    if st is None:
+        # blind doesn't need ligands — take any structure with a file
+        from drugdiscovery.db import session_scope, init_db
+        from drugdiscovery.models import Structure
+        import sqlalchemy as sa
+        init_db()
+        with session_scope() as s:
+            for x in s.execute(sa.select(Structure)).scalars():
+                if x.file_path and pathlib.Path(x.file_path).exists():
+                    st = x; break
+    if st is None:
+        pytest.skip("no acquired structure on disk")
+    pocket = pocket_blind(st.file_path)
+    assert pocket["source"] == "blind"
+    assert len(pocket["center"]) == 3
+    assert pocket["size"] > 10.0  # whole protein, not a ligand pocket
+
+
 def test_prepare_receptor_strips():
     """Receptor prep must yield a non-empty protein PDB from a real cif."""
     st = _any_structure()
