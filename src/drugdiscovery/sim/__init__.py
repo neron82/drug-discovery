@@ -44,6 +44,34 @@ def pocket_from_ligand(cif_path, comp_id: str, padding: float = 4.0) -> dict:
     }
 
 
+def pocket_blind(cif_path, margin: float = 5.0) -> dict:
+    """Blind-docking box: bounding box of all polymer atoms + margin.
+
+    Used when a structure has NO co-crystallised ligand (generalisation path —
+    any target, including AlphaFold models, becomes dockable). Returns the same
+    shape as pocket_from_ligand, tagged with source='blind'.
+    """
+    stru = gemmi.read_structure(str(cif_path))
+    stru.remove_ligands_and_waters()
+    xs, ys, zs = [], [], []
+    for model in stru:
+        for chain in model:
+            for res in chain:
+                ri = gemmi.find_tabulated_residue(res.name)
+                if ri is None or not ri.is_amino_acid():
+                    continue  # protein-only receptor convention (matches prepare_receptor)
+                for a in res:
+                    xs.append(a.pos.x); ys.append(a.pos.y); zs.append(a.pos.z)
+    if not xs:
+        raise ValueError(f"no polymer atoms found in {cif_path}")
+    xs = np.array(xs); ys = np.array(ys); zs = np.array(zs)
+    return {
+        "center": [float(xs.mean()), float(ys.mean()), float(zs.mean())],
+        "size": float(max(np.ptp(xs), np.ptp(ys), np.ptp(zs)) + margin),
+        "comp_id": None, "source": "blind",
+    }
+
+
 def prepare_receptor(cif_path, out_pdb) -> None:
     """Strip non-polymer entities -> protein-only PDB (minimal format)."""
     stru = gemmi.read_structure(str(cif_path))

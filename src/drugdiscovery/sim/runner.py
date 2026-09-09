@@ -49,16 +49,20 @@ def run_docking(session, ex, params: dict) -> dict:
     if not smiles:
         raise ValueError("docking requires compound_smiles (or a linked compound)")
 
-    # pocket: explicit box OR derive from the structure's co-crystallised ligand
+    # pocket: explicit box OR co-crystallised ligand OR blind whole-protein box
     pocket = params.get("pocket")
     if not pocket:
         ligands = structure.ligands or []
         comp_ids = [l.get("comp_id") for l in ligands if isinstance(l, dict)]
         comp_ids = [c for c in comp_ids if c]
-        if not comp_ids:
-            raise ValueError(f"no ligand pocket available for structure {structure.source_id}")
-        from . import pocket_from_ligand
-        pocket = pocket_from_ligand(structure.file_path, comp_ids[0])
+        if comp_ids:
+            from . import pocket_from_ligand
+            pocket = pocket_from_ligand(structure.file_path, comp_ids[0])
+        else:
+            # generalisation path: no co-crystal ligand -> blind box over the
+            # whole polymer (labelled honestly in assumptions below)
+            from . import pocket_blind
+            pocket = pocket_blind(structure.file_path)
 
     # artifact dir
     artifact_root = Path(settings.storage.artifact_dir) / "docking"
@@ -93,10 +97,14 @@ def run_docking(session, ex, params: dict) -> dict:
         rmsd_lb=record.get("rmsd_lb"),
         pose_path=record["pose_path"], runtime_s=record["runtime_s"],
         hardware=record["hardware"],
-        assumptions="Ligand protons added at pH 7.4 by meeko; receptor prepared "
-                    "with Gasteiger charges via meeko (default_altloc=A, bad residues "
+        assumptions=("Ligand protons added at pH 7.4 by meeko; receptor prepared with "
+                    "Gasteiger charges via meeko (default_altloc=A, bad residues "
                     "deleted). Docking is a computational prediction, not proof of "
-                    "biological activity.",
+                    "biological activity."
+                    + (" Box was BLIND (whole-polymer bounding box, no co-crystal "
+                       "ligand): scores are site-agnostic and weaker evidence than "
+                       "pocket-targeted docking."
+                       if pocket.get("source") == "blind" else "")),
     )
     session.add(run)
     session.flush()

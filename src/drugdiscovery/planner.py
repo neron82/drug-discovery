@@ -215,9 +215,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             .limit(1)).scalar_one_or_none()
         if structure is None:
             continue
-        ligands = structure.ligands or []
-        if not ligands:
-            continue
+        blind = not (structure.ligands or [])
         # a compound whose targets include this target
         for c in compounds:
             cid = c.id
@@ -231,14 +229,19 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         if len(dockable) >= 4:
             break
     for d in dockable:
+        is_blind = d["structure"].ligands is None or not (d["structure"].ligands or [])
         created.append(repos.create_experiment(
             session, ws_id, "docking",
             question=f"Virtual screening: {d['compound'].canonical_name} vs {d['target'].canonical_name}",
-            reason="Target has a crystallised ligand pocket and related chemical matter — "
-                   "docking predicts plausible binding geometry",
-            expected_information_gain=0.6, scientific_importance=0.6, confidence_impact=0.4,
+            reason=("Target structure has NO co-crystal ligand — blind whole-protein "
+                    "box docking (site-agnostic, weaker evidence)" if is_blind else
+                    "Target has a crystallised ligand pocket and related chemical matter — "
+                    "docking predicts plausible binding geometry"),
+            expected_information_gain=0.4 if is_blind else 0.6,
+            scientific_importance=0.6, confidence_impact=0.3 if is_blind else 0.4,
             computational_cost=0.9,
-            priority=compute_priority(weights, 0.6, 0.6, 0.4, 0.9),
+            priority=compute_priority(weights, 0.4 if is_blind else 0.6, 0.6,
+                                      0.3 if is_blind else 0.4, 0.9),
             params={"structure_id": d["structure"].id, "compound_id": d["compound"].id,
                     "compound_smiles": d["compound"].canonical_smiles},
             worker="simulation"))
