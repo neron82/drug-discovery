@@ -329,7 +329,7 @@ def research_control(ws_id: str, body: ResearchAction):
             return {"state": "stopped"}
         if act == "cycle":
             from .research import run_cycle
-            res = run_cycle(ws_id)
+            res = run_cycle(ws_id, force=True)
             return {"state": ws.research_state, "cycle": res}
         raise HTTPException(400, "unknown action")
 

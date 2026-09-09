@@ -228,7 +228,7 @@ def next_queued(session: Session, ws_id: str) -> Optional[Experiment]:
     return session.execute(select(Experiment).where(
         Experiment.workspace_id == ws_id, Experiment.status == JobStatus.QUEUED.value,
         Experiment.dependencies == [],
-    ).order_by(Experiment.priority.desc())).scalar_one_or_none()
+    ).order_by(Experiment.priority.desc(), Experiment.created_at.asc())).scalars().first()
 
 
 def mark_experiment(session: Session, ex: Experiment, status: str, result_summary: str = "",

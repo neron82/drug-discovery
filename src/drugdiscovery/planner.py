@@ -134,7 +134,72 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                 computational_cost=0.3, priority=compute_priority(weights, 0.5, 0.7, 0.3, 0.3),
                 params={}, worker="director"))
 
+    # 6) sustain the loop: when the queue is empty, deepen coverage on ligand-less
+    #    top targets and the first open question (hysteresis via state['targeted_searches']).
+    queued_now = session.execute(select(func.count()).select_from(Experiment).where(
+        Experiment.workspace_id == ws_id,
+        Experiment.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]))).scalar_one()
+    if queued_now == 0:
+        targeted = state.get("targeted_searches", [])
+        state = dict(state)
+        changed = False
+        # (a) ligand-less evidence-backed targets
+        for t in n_targets:
+            has_link = any(e.type in ("INHIBITS", "AGONIST_OF", "ANTAGONIST_OF", "BINDS_TO", "TARGETS")
+                           and (e.target.kind in ("drug", "compound", "drug_class") or e.source.kind in ("drug", "compound", "drug_class"))
+                           for e in list(t.out_edges) + list(t.in_edges))
+            if not has_link:
+                topic = f"{t.canonical_name} hair follicle mechanism"
+                if topic in targeted:
+                    continue
+                created.append(repos.create_experiment(
+                    session, ws_id, "literature_search",
+                    question=f"Targeted expansion: {t.canonical_name}",
+                    reason="Evidence-backed target lacks mapped chemical matter — search deeper",
+                    expected_information_gain=0.7, scientific_importance=0.7,
+                    confidence_impact=0.5, computational_cost=1.0,
+                    priority=compute_priority(weights, 0.7, 0.7, 0.5, 1.0),
+                    params={"query": f"{t.canonical_name} AND (hair follicle OR alopecia) AND (inhibitor OR antagonist OR ligand OR treatment)",
+                            "size": 8, "provider": settings.literature.get("default_provider", "europepmc")},
+                    worker="director"))
+                targeted.append(topic)
+                changed = True
+                if len(created) >= 2:
+                    break
+        # (b) first open question
+        if not changed:
+            questions = state.get("open_questions") or []
+            if questions:
+                qtext = questions[0].get("q", "") if isinstance(questions[0], dict) else str(questions[0])
+                topic = _topic_from_question(qtext)
+                if topic and topic not in targeted:
+                    created.append(repos.create_experiment(
+                        session, ws_id, "literature_search",
+                        question=f"Open question exploration: {qtext[:60]}",
+                        reason="Pursue a defined open research question",
+                        expected_information_gain=0.6, scientific_importance=0.8,
+                        confidence_impact=0.3, computational_cost=1.0,
+                        priority=compute_priority(weights, 0.6, 0.8, 0.3, 1.0),
+                        params={"query": topic, "size": 8,
+                                "provider": settings.literature.get("default_provider", "europepmc")},
+                        worker="director"))
+                    targeted.append(topic)
+                    changed = True
+        if changed:
+            state["targeted_searches"] = targeted
+            ws.state_json = state
+
     return created
+
+
+def _topic_from_question(q: str) -> str:
+    """Derive a searchable topic from an open question (strip the interrogative)."""
+    import re
+    z = re.sub(r"(^|\s)(Is|Which|What|How|Does|Do|Can|Are|Why|When)(\s|$)", " ", q)
+    z = re.sub(r"\?.*$", "", z)
+    z = z.replace("therapeutically targetable", "therapeutic target").strip()
+    z = re.sub(r"\s+", " ", z).strip(" ,.:")
+    return z[:90] if len(z) > 8 else ""
 
 
 def choose_next(session, ws_id) -> Experiment | None:

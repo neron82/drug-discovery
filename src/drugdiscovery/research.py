@@ -135,15 +135,16 @@ def derive_open_questions(session, ws) -> list[str]:
 # ---------------------------------------------------------------------------
 # Cycle + runner
 # ---------------------------------------------------------------------------
-def run_cycle(ws_id: str, llm: LLMProvider | None = None) -> dict:
+def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False) -> dict:
     """One research cycle. Returns a summary dict (or {"noop": true})."""
     from . import planner
+    from .db import session_scope
     llm = llm or _mk_llm()
-    with get_session() as session:
+    with session_scope() as session:
         ws = repos.get_workspace(session, ws_id)
         if ws is None:
             return {"error": "workspace not found"}
-        if not ws.research_enabled:
+        if not ws.research_enabled and not force:
             return {"noop": True, "reason": "research disabled"}
 
         made = planner.ensure_pipeline(session, ws)
@@ -170,7 +171,7 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None) -> dict:
             ctr["cycles"] = ctr.get("cycles", 0) + 1
             state["last_experiment"] = {"kind": ex.kind, "summary": summary, "ran_s": round(time.time() - started, 2)}
             ws.state_json = state
-            ws.research_state = "running"
+            ws.research_state = "running" if ws.research_enabled else ws.research_state
         return {"kind": ex.kind, "summary": summary, "error": error or None,
                 "elapsed_s": round(time.time() - started, 2)}
 
