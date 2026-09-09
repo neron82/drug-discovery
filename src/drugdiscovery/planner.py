@@ -221,9 +221,12 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         blind = not (structure.ligands or [])
         # a compound whose targets include this target
         for c in compounds:
-            cid = c.id
-            if _already_queued(session, ws_id, "docking", {"structure_id": structure.id,
-                                                           "compound_id": cid}, terminal=True):
+            # ONE params dict feeds both the dedup guard and create_experiment —
+            # a guard key computed separately can drift from stored params and
+            # silently defeat dedup (see compound_discovery max_n bug, dbea0c4).
+            pdict = {"structure_id": structure.id, "compound_id": c.id,
+                     "compound_smiles": c.canonical_smiles}
+            if _already_queued(session, ws_id, "docking", _params_key(pdict), terminal=True):
                 continue
             dockable.append({"structure": structure, "compound": c,
                              "target": t})
