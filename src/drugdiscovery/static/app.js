@@ -159,9 +159,64 @@ async function openNodeCard(nid){
   }catch(err){ body.innerHTML="<div class='muted'>card error: "+esc(String(err.message||err))+"</div>"; }
 }
 
+const cmpSel = new Set();
+function toggleCmp(el){ if(el.checked) cmpSel.add(el.dataset.cid); else cmpSel.delete(el.dataset.cid); }
+async function openCompoundCard(cid){
+  const modal=document.getElementById("cmp-modal"); modal.hidden=false;
+  const body=document.getElementById("cmp-body");
+  body.innerHTML="<div class='muted'>Loading compound card…</div>";
+  try{
+    const c=await api(`/compounds/${cid}`);
+    const sim=await api(`/compounds/${cid}/similar?min_sim=0.3`).catch(()=>[]);
+    let sims=[];
+    if(state.ws){ const all=await api(`/workspaces/${state.ws.id}/simulations`).catch(()=>[]);
+      sims=(Array.isArray(all)?all:[]).filter(r=>r.compound_id===cid); }
+    document.getElementById("cmp-title").textContent=c.name;
+    const dockRows=sims.map(r=>`<tr><td class="mono">${esc(r.kind)}</td><td>${esc(r.structure_source_id||r.structure_id.slice(0,8))}</td><td class="mono">${r.score!=null?r.score.toFixed(2):"—"}</td><td>${badgeCls2(r.status)}</td><td class="small mono">${esc(r.software_version||r.software||"")} seed ${r.seed}</td><td class="small muted">${esc((r.assumptions||"").slice(0,80))}…</td></tr>`).join("");
+    let html=`<div class="cmp-grid"><img class="struct big" src="/api/compounds/${cid}/svg" alt="${esc(c.name)}"/>
+      <div class="descgrid">
+        <span class="k">formula</span><span class="mono">${esc(c.formula||"—")}</span>
+        <span class="k">MW</span><span class="mono">${c.molmass??"—"}</span>
+        <span class="k">logP</span><span class="mono">${c.logp??"—"}</span>
+        <span class="k">TPSA</span><span class="mono">${c.tpsa??"—"}</span>
+        <span class="k">HBD/HBA</span><span class="mono">${c.hbd??"—"} / ${c.hba??"—"}</span>
+        <span class="k">rotatable</span><span class="mono">${c.rotb??"—"}</span>
+        <span class="k">InChIKey</span><span class="mono">${esc(c.inchikey||"—")}</span>
+        <span class="k">status</span><span class="badge">${esc(c.research_status)}</span>
+        <span class="k">sources</span><span class="small">${Object.keys(c.sources||{}).map(esc).join(", ")||"—"}</span>
+      </div></div>
+      <div class="small mono muted" style="word-break:break-all;margin:8px 0">${esc(c.smiles||"")}</div>
+      <h3>Simulation history (${sims.length}) — predictions, not activity claims</h3>
+      <table><thead><tr><th>Kind</th><th>Structure</th><th>Score</th><th>Status</th><th>Software/seed</th><th>Assumptions</th></tr></thead><tbody>${dockRows||'<tr><td colspan=6 class="muted">none yet</td></tr>'}</tbody></table>
+      <h3>Similar compounds (${sim.filter(x=>x.id!==cid).length})</h3>
+      <div class="cards">${sim.filter(x=>x.id!==cid).slice(0,8).map(x=>`<div class="card mini" onclick="openCompoundCard('${x.id}')">
+        <img class="struct sm" src="/api/compounds/${x.id}/svg" loading="lazy"/>
+        <div class="small"><b>${esc(x.name)}</b><br>Tanimoto ${x.similarity}</div></div>`).join("")||"<div class='muted small'>none ≥0.3</div>"}</div>`;
+    body.innerHTML=html;
+  }catch(err){ body.innerHTML="<div class='muted'>card error: "+esc(String(err.message||err))+"</div>"; }
+}
+function badgeCls2(s){ return badge(s==="done"?"established":(s==="failed"?"computational":"speculative")); }
+async function cmpVs(){
+  const ids=[...cmpSel];
+  if(ids.length<2){ alert("Select at least 2 compounds via the compare checkboxes"); return; }
+  const modal=document.getElementById("cmp-vs"); modal.hidden=false;
+  const body=document.getElementById("cmp-vs-body");
+  body.innerHTML="<div class='muted'>Loading…</div>";
+  const cs=await Promise.all(ids.slice(0,4).map(id=>api(`/compounds/${id}`)));
+  const rows=[["name","name"],["formula","formula"],["MW","molmass"],["logP","logp"],["TPSA","tpsa"],["HBD","hbd"],["HBA","hba"],["rotatable","rotb"],["status","research_status"]];
+  body.innerHTML=`<table><thead><tr><th></th>${cs.map(c=>`<th><img class="struct sm" src="/api/compounds/${c.id}/svg"/><br>${esc(c.name)}</th>`).join("")}</tr></thead>
+   <tbody>${rows.map(([lbl,k])=>`<tr><td class="k">${lbl}</td>${cs.map(c=>`<td class="mono">${esc(String(c[k]??"—"))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
 function bindView(view){
   if (view==="map") initGraph();
+  $$(".tgt-link").forEach(el=> el.onclick=()=>openNodeCard(el.dataset.nid));
   const nc = $("#node-close"); if (nc) nc.onclick = ()=> $("#node-modal").hidden = true;
+  const cc = $("#cmp-close"); if (cc) cc.onclick = ()=> $("#cmp-modal").hidden = true;
+  const cv = $("#cmp-vs-close"); if (cv) cv.onclick = ()=> $("#cmp-vs").hidden = true;
+  const cb = $("#btn-cmp"); if (cb) cb.onclick = cmpVs;
+  $$(".compound-card h4").forEach(h=> h.style.cursor="pointer", 0);
+  $$(".compound-card h4").forEach(h=> h.onclick = ()=>{ const inp=h.closest(".compound-card").querySelector("input[data-cid]"); if(inp) openCompoundCard(inp.dataset.cid); });
   if (view==="compounds") bindCompound();
   if (view==="structures") bindStructures();
   if (view==="simulations") bindSimulations();
@@ -192,7 +247,7 @@ async function renderTargets(){
   const ts = await api(`/workspaces/${state.ws.id}/targets`);
   if (!ts.length) return "<div class='placeholder'>No evidence-supported targets yet.</div>";
   const rows = ts.map(t=>`<tr>
-    <td><b>${esc(t.name)}</b> <span class="badge">${esc(t.kind)}</span><br><span class="small muted">${esc((t.ligands||[]).join(", ") || "no ligands mapped")}</span></td>
+    <td><b class="tgt-link" data-nid="${esc(t.id)}" style="cursor:pointer;text-decoration:underline dotted">${esc(t.name)}</b> <span class="badge">${esc(t.kind)}</span><br><span class="small muted">${esc((t.ligands||[]).join(", ") || "no ligands mapped")}</span></td>
     <td>${badge(t.evidence_level)}</td>
     <td>${esc(t.profile.independent_sources)}</td>
     <td>${esc(t.profile.replication)}</td>
@@ -216,6 +271,7 @@ async function renderCompounds(){
       <div><h4>${esc(c.name)}</h4>
       <div class="small mono muted">${esc(c.formula||"")} · MW ${c.molmass??"–"} · logP ${c.logp??"–"} · TPSA ${c.tpsa??"–"}</div>
       <div class="small mono muted" style="word-break:break-all">${esc(c.inchikey||"")}</div>
+      <label class="cmpchk"><input type="checkbox" data-cid="${esc(c.id)}" onchange="toggleCmp(this)"> compare</label>
       <div style="margin-top:6px">${(x.targets||[]).map(t=>`<span class="pill">→ ${esc(t.name)} <span class="muted">${esc(t.relation)}${t.pchembl?` · pChEMBL ${t.pchembl}`:""}</span></span>`).join(" ")||'<span class="muted small">no measured target link</span>'}</div>
       </div></div>`; }).join("");
   const sel = cats.map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
@@ -232,7 +288,7 @@ async function renderCompounds(){
         <input id="sim-smiles" type="text" placeholder="Oc1ccccc1" style="min-width:260px"/></label>
       <label>or catalogue compound
         <select id="sim-seed"><option value="">— none —</option>${sel}</select></label>
-      <button id="btn-sim" class="btn btn-primary">Search</button>
+      <button id="btn-sim" class="btn btn-primary">Search</button> <button id="btn-cmp" class="btn">Compare selected</button>
     </div>
     <div class="row" style="margin-top:6px"><label>min similarity
       <input id="sim-min" type="number" step="0.05" min="0" max="1" value="0.35" style="width:70px"/></label></div>

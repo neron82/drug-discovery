@@ -8,7 +8,18 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="brand-mark">◈</span> <b>in-silico lab</b><span class="brand-sub">drug discovery platform</span></div>
+  <div class="brand"><span class="brand-mark">◈</span> <b>in-silico lab</b><span class="brand-sub">drug discovery platform</span></div><div class="modal" id="cmp-modal" hidden>
+ <div class="modal-box">
+  <div class="modal-head"><span id="cmp-title">Compound</span><button id="cmp-close" class="btn small">Close</button></div>
+  <div id="cmp-body" style="overflow:auto;padding:14px"></div>
+ </div>
+</div>
+<div class="modal" id="cmp-vs" hidden>
+ <div class="modal-box">
+  <div class="modal-head"><span>Side-by-side comparison</span><button id="cmp-vs-close" class="btn small">Close</button></div>
+  <div id="cmp-vs-body" style="overflow:auto;padding:14px"></div>
+ </div>
+</div>
 <div class="modal" id="node-modal" hidden>
  <div class="modal-box">
   <div class="modal-head"><span id="node-title">Node</span><button id="node-close" class="btn small">Close</button></div>

@@ -145,3 +145,12 @@ tr:hover td{background:var(--bg2)}
 .stmt{border-left:2px solid #30363d;padding:6px 10px;margin:6px 0;font-size:12px;color:#c9d1d9}
 .paperline{margin:6px 0;font-size:12px}
 .modal-box h3{margin:14px 0 6px;font-size:13px;color:#d7ddee}
+
+/* compound cards §26 */
+.cmp-grid{display:flex;gap:16px;align-items:flex-start}
+.descgrid{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;font-size:12px}
+.descgrid .k{color:#8b949e;text-transform:uppercase;font-size:10px;letter-spacing:.06em}
+.struct.big{width:220px;height:160px;background:#fff;border-radius:8px;padding:4px}
+.struct.sm{width:90px;height:64px;background:#fff;border-radius:6px;padding:3px}
+.card.mini{padding:8px;cursor:pointer;text-align:center}
+.cmpchk{font-size:11px;color:#8b949e;margin-top:6px;display:inline-flex;gap:6px;align-items:center}

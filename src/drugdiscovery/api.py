@@ -217,6 +217,18 @@ def node_card(node_id: str):
             if c:
                 compound = {"id": c.id, "name": c.canonical_name,
                             "smiles": c.canonical_smiles, "status": c.research_status}
+        sims = []
+        st_ids = []
+        for st in s.execute(select(Structure).where(
+                Structure.protein_node_id == node_id)).scalars():
+            st_ids.append(st.id)
+        if st_ids:
+            from .models import SimulationRun
+            for sr in s.execute(select(SimulationRun).where(
+                    SimulationRun.structure_id.in_(st_ids))).scalars():
+                sims.append({"id": sr.id, "kind": sr.kind, "status": sr.status,
+                             "score": sr.score, "compound_id": sr.compound_id,
+                             "software": sr.software_version, "seed": sr.seed})
         structures = [{"id": st.id, "source": st.source, "source_id": st.source_id,
                        "resolution": st.resolution}
                       for st in s.execute(select(Structure).where(
@@ -243,6 +255,7 @@ def node_card(node_id: str):
                             "evidence_level": st.evidence_level,
                             "paper_id": st.source_paper_id} for st in stmts][:40],
             "papers": papers, "compound": compound, "structures": structures,
+            "simulations": sims,
         }
 
 
