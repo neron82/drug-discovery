@@ -41,6 +41,7 @@ research:
   loop_sleep_seconds: 20
   cycle_safety_cap: 4              # max NEW experiments auto-created per loop cycle
   max_pending_experiments: 64      # backpressure: stop scheduling when queue is this large
+  stale_running_after_minutes: 180 # recover jobs left running after a crashed worker
   budgets:
     max_lit_requests_per_hour: 90
     max_simulations_per_hour: 0    # 0 = unlimited (Phase 4 applies)

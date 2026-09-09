@@ -42,6 +42,7 @@ class ResearchConfig(BaseModel):
     loop_sleep_seconds: int = 20
     cycle_safety_cap: int = 4
     max_pending_experiments: int = 64
+    stale_running_after_minutes: int = 180
     budgets: Budgets = Budgets()
 
 
@@ -134,6 +135,7 @@ def load_settings() -> Settings:
         loop_sleep_seconds=int(res.get("loop_sleep_seconds", 20)),
         cycle_safety_cap=int(res.get("cycle_safety_cap", 4)),
         max_pending_experiments=int(res.get("max_pending_experiments", 64)),
+        stale_running_after_minutes=int(res.get("stale_running_after_minutes", 180)),
         budgets=Budgets(**(res.get("budgets", {}) or {})),
     )
     return Settings(api=api_c, storage=st_c, llm=llm_c, embeddings=emb_c, literature=lit_c, research=res_c)

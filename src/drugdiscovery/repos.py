@@ -6,7 +6,7 @@ attaches provenance (paper+statement). Nothing uncited becomes silent fact.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -246,6 +246,56 @@ def mark_experiment(session: Session, ex: Experiment, status: str, result_summar
         ex.started_at = now()
     elif status in (JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value):
         ex.finished_at = now()
+
+
+def recover_stale_experiments(session: Session, *, stale_after_minutes: int,
+                               workspace_id: str | None = None) -> list[Experiment]:
+    """Requeue jobs left RUNNING by a crashed or restarted worker.
+
+    The experiment row remains the audit record: recovery metadata is appended to
+    ``result_json`` and the previous worker/error are preserved there. Only jobs
+    older than the lease are touched, so a legitimately long docking/MD run is
+    not stolen by a second worker.
+    """
+    cutoff = now() - timedelta(minutes=max(1, stale_after_minutes))
+    query = select(Experiment).where(
+        Experiment.status == JobStatus.RUNNING.value,
+        Experiment.started_at.is_not(None),
+    )
+    if workspace_id:
+        query = query.where(Experiment.workspace_id == workspace_id)
+    candidates = session.execute(query.order_by(Experiment.started_at.asc())).scalars().all()
+    # SQLite returns timezone-aware DateTime columns as naive values. Compare in
+    # Python after normalising them, rather than relying on dialect-specific SQL
+    # string coercion (which can make a fresh lease look stale).
+    stale = []
+    for ex in candidates:
+        started = ex.started_at
+        if started is not None and started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if started is not None and started < cutoff:
+            stale.append(ex)
+    recovered_at = now().isoformat()
+    for ex in stale:
+        lifecycle = dict(ex.result_json or {})
+        lifecycle["recovery"] = {
+            "recovered_at": recovered_at,
+            "reason": "stale running lease; worker likely crashed or was restarted",
+            "previous_worker": ex.worker,
+            "previous_started_at": ex.started_at.isoformat() if ex.started_at else None,
+            "attempt": int(lifecycle.get("recovery", {}).get("attempt", 0)) + 1,
+        }
+        ex.result_json = lifecycle
+        ex.status = JobStatus.QUEUED.value
+        ex.started_at = None
+        ex.finished_at = None
+        ex.worker = ex.worker or "recovered"
+        ex.error = "Requeued after stale worker lease; see result_json.recovery"
+        ex.result_summary = "Requeued after stale worker lease"
+    if stale:
+        log.warning("Recovered %d stale running experiment(s)%s", len(stale),
+                    f" in workspace {workspace_id}" if workspace_id else "")
+    return stale
 
 
 # ---------------------------------------------------------------------------

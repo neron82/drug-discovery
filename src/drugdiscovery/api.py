@@ -103,6 +103,39 @@ app = FastAPI(title="Drug Discovery Platform", version=__version__)
 init_db()
 
 
+def _recover_stale_jobs() -> int:
+    """Recover interrupted jobs before any persistent loop is resumed."""
+    recovered = 0
+    with session_scope() as s:
+        rows = repos.recover_stale_experiments(
+            s, stale_after_minutes=settings.research.stale_running_after_minutes,
+        )
+        for ex in rows:
+            repos.add_timeline(
+                s, ex.workspace_id, "system", "warn",
+                f"Recovered stale {ex.kind} experiment and returned it to the queue",
+                {"experiment_id": ex.id, "lease_minutes": settings.research.stale_running_after_minutes},
+            )
+        recovered = len(rows)
+    if recovered:
+        log.warning("Startup recovered %d stale experiment(s)", recovered)
+    return recovered
+
+
+_RECOVERED_AT_STARTUP = _recover_stale_jobs()
+
+
+@app.on_event("startup")
+async def resume_enabled_workspaces() -> None:
+    """Resume enabled research workspaces after an API process restart."""
+    with get_session() as s:
+        ids = [w.id for w in repos.list_workspaces(s) if w.research_enabled]
+    for ws_id in ids:
+        _start_loop(ws_id)
+    if ids:
+        log.info("Resumed %d enabled research workspace(s)", len(ids))
+
+
 @app.get("/api/status")
 def status():
     llm = LLMProvider()
@@ -119,7 +152,8 @@ def status():
     return {"service": "drug-discovery", "version": __version__,
             "llm": caps, "embeddings": {"enabled": settings.embeddings.enabled},
             "storage": {"db": settings.storage.db_path}, "workspaces": n_ws,
-            "active_research_loops": len(_running_tasks),
+            "active_research_loops": sum(1 for task in _running_tasks.values() if not task.done()),
+            "recovered_stale_jobs_at_startup": _RECOVERED_AT_STARTUP,
             "budgets": {"max_lit_requests_per_hour": settings.research.budgets.max_lit_requests_per_hour,
                         "max_simulations_per_hour": settings.research.budgets.max_simulations_per_hour}}
 

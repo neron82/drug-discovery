@@ -176,3 +176,44 @@ def test_planner_cycle_safety_cap_limits_new_jobs(monkeypatch):
         created = planner.ensure_pipeline(s, ws)
         assert len(created) == 2
         assert {x.kind for x in created} == {"literature_search"}
+
+
+def test_stale_running_experiment_is_requeued_with_recovery_provenance():
+    from datetime import timedelta
+    from drugdiscovery.models import JobStatus
+    with get_session() as s:
+        ws = repos.create_workspace(s, "Recovery WS", "mpb")
+        ex = repos.create_experiment(s, ws.id, "docking", worker="research-api:old")
+        ex.status = JobStatus.RUNNING.value
+        ex.started_at = repos.now() - timedelta(minutes=30)
+        ex.result_json = {"existing": "kept"}
+        s.commit()
+
+        recovered = repos.recover_stale_experiments(
+            s, stale_after_minutes=10, workspace_id=ws.id,
+        )
+        assert [x.id for x in recovered] == [ex.id]
+        assert ex.status == JobStatus.QUEUED.value
+        assert ex.started_at is None
+        assert ex.result_summary == "Requeued after stale worker lease"
+        assert ex.error.startswith("Requeued after stale worker lease")
+        assert ex.result_json["existing"] == "kept"
+        assert ex.result_json["recovery"]["previous_worker"] == "research-api:old"
+        assert ex.result_json["recovery"]["attempt"] == 1
+
+
+def test_fresh_running_experiment_is_not_requeued():
+    from datetime import timedelta
+    from drugdiscovery.models import JobStatus
+    with get_session() as s:
+        ws = repos.create_workspace(s, "Fresh Lease WS", "mpb")
+        ex = repos.create_experiment(s, ws.id, "literature_search")
+        ex.status = JobStatus.RUNNING.value
+        ex.started_at = repos.now() - timedelta(minutes=2)
+        s.commit()
+
+        recovered = repos.recover_stale_experiments(
+            s, stale_after_minutes=10, workspace_id=ws.id,
+        )
+        assert recovered == []
+        assert ex.status == JobStatus.RUNNING.value
