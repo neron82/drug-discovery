@@ -19,7 +19,7 @@ from .db import get_session
 from .extract import process_paper
 from .lit.providers import get_provider
 from .llm import LLMProvider
-from .models import JobStatus, Node, Paper
+from .models import Hypothesis, JobStatus, Node, Paper
 
 log = logging.getLogger("dd.research")
 
