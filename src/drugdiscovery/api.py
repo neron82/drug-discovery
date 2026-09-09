@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from . import repos
 from .config import settings
-from .db import get_session, init_db
+from .db import get_session, session_scope, init_db
 from .llm import LLMProvider
 from .lit.providers import get_provider
 from .models import JobStatus, KnowledgeType
@@ -119,7 +119,7 @@ def status():
 
 @app.post("/api/workspaces", status_code=201)
 def create_ws(body: WorkspaceIn):
-    with get_session() as s:
+    with session_scope() as s:
         ws = repos.create_workspace(s, body.name, body.disease, body.description, body.config)
         return {"id": ws.id, "slug": ws.slug, "name": ws.name}
 
