@@ -1,0 +1,46 @@
+# Drug Discovery Platform — platform configuration (disease-agnostic).
+# Disease-specific configuration lives in per-workspace records (not here).
+
+api:
+  host: 0.0.0.0
+  port: 8020
+
+storage:
+  data_dir: ./data
+  db_path: ./data/research.db
+  artifact_dir: ./data/artifacts
+  log_dir: ./logs
+
+llm:
+  # OpenAI-compatible local multimodal endpoint (vision capable)
+  base_url: http://127.0.0.1:8080/v1
+  model: Qwen3.8-Flash-Next-exl3
+  api_key: ""
+  temperature: 0.2
+  json_mode: true
+
+embeddings:
+  base_url: http://127.0.0.1:7777/v1
+  model: bge-m3
+  enabled: true
+  dimension: 1024
+
+literature:
+  default_provider: europepmc   # europepmc | pubmed
+  # per-workshop research budgets
+  max_requests_per_hour: 90
+  max_papers_per_search: 12
+
+research:
+  # Priority = EIG * importance * confidence_impact / cost
+  default_weights:
+    expected_information_gain: 1.0
+    scientific_importance: 1.0
+    confidence_impact: 1.0
+    computational_cost: 0.5        # divide
+  loop_sleep_seconds: 20
+  cycle_safety_cap: 4              # max NEW experiments auto-created per loop cycle
+  budgets:
+    max_lit_requests_per_hour: 90
+    max_simulations_per_hour: 0    # 0 = unlimited (Phase 4 applies)
+    max_llm_calls_per_cycle: 15

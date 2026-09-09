@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>In-Silico Drug Discovery Lab</title>
+<link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark">◈</span> <b>in-silico lab</b><span class="brand-sub">drug discovery platform</span></div>
+  <div id="ws-select-wrap" class="ws-wrap"></div>
+  <div class="research-controls">
+    <span id="research-state" class="pill pill-idle">—</span>
+    <button id="btn-start" class="btn btn-primary" title="Start autonomous research">▶ Start</button>
+    <button id="btn-pause" class="btn" title="Pause autonomous research">⏸ Pause</button>
+    <button id="btn-cycle" class="btn" title="Run one research cycle now">⟳ Cycle</button>
+  </div>
+  <div class="sys-state">
+    <span class="dot" id="llm-dot"></span><span id="llm-label">llm …</span>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <nav id="nav">
+      <a data-view="overview" class="active">Overview</a>
+      <a data-view="map">Mechanism Map</a>
+      <a data-view="targets">Targets</a>
+      <a data-view="compounds">Compounds</a>
+      <a data-view="structures">Structures</a>
+      <a data-view="simulations">Simulations</a>
+      <a data-view="literature">Literature</a>
+      <a data-view="hypotheses">Hypotheses</a>
+      <a data-view="queue">Research Queue</a>
+      <a data-view="timeline">Timeline</a>
+      <a data-view="system">System</a>
+    </nav>
+    <div class="sidebar-foot">
+      <button id="btn-search" class="btn">⊕ New literature search</button>
+    </div>
+  </aside>
+
+  <main id="main" class="main"><div class="placeholder">Loading…</div></main>
+
+  <aside class="right-panel">
+    <div class="rp-head">Research Agent Activity</div>
+    <div id="activity" class="activity"><div class="placeholder">idle</div></div>
+  </aside>
+</div>
+
+<!-- search modal -->
+<div id="search-modal" class="modal hidden">
+  <div class="modal-card">
+    <h3>New Literature Search</h3>
+    <input id="search-q" type="text" placeholder="e.g. hair follicle Wnt beta-catenin signaling"/>
+    <div class="row">
+      <label>size <input id="search-size" type="number" value="10" min="1" max="50"/></label>
+      <label>provider
+        <select id="search-provider"><option value="europepmc">Europe PMC</option><option value="pubmed">PubMed</option></select>
+      </label>
+    </div>
+    <div class="row right">
+      <button id="search-cancel" class="btn">Cancel</button>
+      <button id="search-go" class="btn btn-primary">Run search</button>
+    </div>
+    <div id="search-result" class="search-result"></div>
+  </div>
+</div>
+
+<script src="/static/vendor/vis-network.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

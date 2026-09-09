@@ -1,0 +1,15 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# data / artifacts (keep out of git; regenerated)
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+# env
+.env

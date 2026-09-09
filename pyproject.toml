@@ -1,0 +1,31 @@
+[project]
+name = "drug-discovery"
+version = "0.1.0"
+description = "Autonomous computational in-silico drug-discovery laboratory (disease-agnostic research platform)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "orjson>=3.10",
+    "networkx>=3.3",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+chem = ["rdkit>=2024.3"]   # Phase 2 cheminformatics engine
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/drugdiscovery"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/drugdiscovery"]

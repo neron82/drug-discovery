@@ -1,0 +1,106 @@
+:root{
+  --bg:#0b0e14; --bg2:#11151f; --bg3:#171c29; --line:#232b3d; --line2:#2c3550;
+  --text:#d7ddee; --muted:#7c87a6; --dim:#4a5470;
+  --accent:#4f8cff; --accent2:#7aa2ff; --good:#37d399; --warn:#e5b567; --bad:#e5646e;
+  --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);display:flex;flex-direction:column}
+a{color:var(--accent2);text-decoration:none}
+
+/* topbar */
+.topbar{display:flex;align-items:center;gap:16px;padding:10px 16px;background:var(--bg2);
+  border-bottom:1px solid var(--line);height:52px}
+.brand{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.brand-mark{color:var(--accent);font-size:18px}
+.brand-sub{color:var(--dim);font-size:12px}
+.ws-wrap{flex:1;display:flex;align-items:center;gap:8px}
+.ws-wrap select{background:var(--bg3);color:var(--text);border:1px solid var(--line2);
+  border-radius:6px;padding:6px 10px;font:13px var(--sans);max-width:280px}
+.research-controls{display:flex;align-items:center;gap:6px}
+.sys-state{display:flex;align-items:center;gap:6px;font:12px var(--mono);color:var(--muted);white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--dim);display:inline-block}
+.dot.ok{background:var(--good)} .dot.bad{background:var(--bad)}
+
+/* layout */
+.layout{flex:1;display:flex;min-height:0}
+.sidebar{width:190px;background:var(--bg2);border-right:1px solid var(--line);padding:12px 8px;display:flex;flex-direction:column;gap:8px}
+.sidebar nav{display:flex;flex-direction:column;gap:2px}
+.sidebar nav a{padding:8px 10px;border-radius:6px;color:var(--muted);cursor:pointer;font-size:13px}
+.sidebar nav a:hover{background:var(--bg3);color:var(--text)}
+.sidebar nav a.active{background:var(--bg3);color:var(--text);border-left:3px solid var(--accent);font-weight:600}
+.sidebar-foot{margin-top:auto}
+.main{flex:1;overflow:auto;padding:18px 20px;min-width:0}
+.right-panel{width:320px;background:var(--bg2);border-left:1px solid var(--line);display:flex;flex-direction:column}
+.rp-head{padding:10px 14px;font-size:12px;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
+.activity{flex:1;overflow:auto;padding:10px 14px;font-size:12px}
+.placeholder{color:var(--dim);padding:20px;text-align:center}
+
+/* typography / cards */
+h1{font-size:20px;margin:0 0 4px} h2{font-size:16px;margin:0 0 4px}
+h3{font-size:14px;margin:0 0 6px;color:var(--text)}
+.sub{color:var(--muted);font-size:13px;margin-bottom:14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-top:12px}
+.card{background:var(--bg3);border:1px solid var(--line);border-radius:10px;padding:14px;position:relative}
+.card h4{margin:0 0 6px;font-size:13px;color:var(--accent2)}
+.card .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+.big{font-size:26px;font-weight:700;color:var(--text)}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.row{display:flex;gap:8px;align-items:center}
+.row.right{justify-content:flex-end}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+
+/* pills / badges */
+.pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;border:1px solid var(--line2);background:var(--bg3)}
+.pill-idle{color:var(--dim)} .pill-running{color:var(--good);border-color:var(--good)}
+.pill-paused,.pill-stopped{color:var(--warn);border-color:var(--warn)}
+.badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;background:var(--bg3);
+  border:1px solid var(--line2);color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+.badge.established{color:var(--good);border-color:var(--good)}
+.badge.probable{color:var(--accent2);border-color:var(--accent2)}
+.badge.speculative{color:var(--warn);border-color:var(--warn)}
+.badge.computational{color:var(--dim)}
+
+/* conf bar */
+.conf-bar{height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin-top:6px}
+.conf-fill{height:100%;background:var(--accent)}
+
+/* buttons */
+.btn{background:var(--bg3);color:var(--text);border:1px solid var(--line2);border-radius:6px;
+  padding:7px 12px;font:13px var(--sans);cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn-primary:hover{background:var(--accent2);border-color:var(--accent2);color:#04101f}
+
+/* activity feed */
+.activity .evt{padding:8px 0;border-bottom:1px solid var(--line)}
+.activity .evt .t{color:var(--dim);font:11px var(--mono);margin-bottom:2px}
+.activity .evt .m{color:var(--text)}
+.activity .evt.warn .m{color:var(--warn)}
+.activity .evt.success .m{color:var(--good)}
+.activity .evt.error .m{color:var(--bad)}
+
+/* tables */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+tr:hover td{background:var(--bg2)}
+
+/* graph */
+#graph-host{width:100%;height:100%;min-height:420px;border:1px solid var(--line);border-radius:10px;background:var(--bg2)}
+#timeline-list{max-width:860px}
+
+/* modal */
+.modal{position:fixed;inset:0;background:rgba(5,8,14,.7);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal-card{background:var(--bg3);border:1px solid var(--line2);border-radius:12px;padding:20px;width:460px}
+.modal input[type=text],.modal input[type=number],.modal select{width:100%;margin:6px 0;padding:8px;
+  background:var(--bg2);border:1px solid var(--line2);border-radius:6px;color:var(--text);font:13px var(--mono)}
+.hidden{display:none!important}
+.search-result{margin-top:10px;font-size:12px;color:var(--muted)}
+
+.el{display:grid;grid-template-columns:240px 1fr;gap:4px 10px;font-size:12px;padding:3px 0}
+.el .el-k{color:var(--muted)}
