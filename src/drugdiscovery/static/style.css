@@ -154,3 +154,8 @@ tr:hover td{background:var(--bg2)}
 .struct.sm{width:90px;height:64px;background:#fff;border-radius:6px;padding:3px}
 .card.mini{padding:8px;cursor:pointer;text-align:center}
 .cmpchk{font-size:11px;color:#8b949e;margin-top:6px;display:inline-flex;gap:6px;align-items:center}
+
+/* paper viewer §32 */
+.srcbox{margin-top:6px;font-size:11px;color:#8b949e}
+.srcbox summary{cursor:pointer}
+.quote{border-left:3px solid #58a6ff;margin:6px 0;padding:4px 10px;font-style:italic;color:#c9d1d9}

@@ -84,6 +84,11 @@ def _stmt_d(s):
             "subject": s.subject, "object": s.object, "direction": s.direction,
             "evidence_level": s.evidence_level, "confidence": s.confidence, "species": s.species,
             "model_context": s.model_context, "contradicted": bool(s.properties.get("contradicted")),
+            "effect_size": s.effect_size, "significance": s.significance,
+            "quotation": s.quotation, "dose": s.properties.get("dose", ""),
+            "endpoint": s.properties.get("endpoint", ""),
+            "support_citations": s.support_citations[:5],
+            "contradict_citations": s.contradict_citations[:5],
             "paper_id": s.source_paper_id, "extractor_model": s.extractor_model}
 
 

@@ -461,10 +461,18 @@ function badgeCls(s){ return s==="extracted"?"established":(s==="failed"?"comput
 function bindLiterature(){
   $$(".paper-row").forEach(tr=> tr.onclick = async ()=>{
     const d = await api("/papers/"+tr.dataset.pid);
-    const stmts = (d.statements||[]).map(s=>`<div class="card" style="margin:6px 0">
-      <div class="small">${esc(s.relation||"")} ${d.claim_type||""} <span class="badge ${badgeCls(d.status)}">${esc(s.evidence_level)}</span>
-        <span class="mono muted small">${esc(s.species)} / ${esc(s.model_context)} · conf ${s.confidence}${s.contradicted?" · CONTRADICTED":""}</span></div>
-      <div style="margin-top:4px">${esc(s.text)}</div></div>`).join("") || "<div class='placeholder'>no claims extracted</div>";
+const stmts = (d.statements||[]).map(s=>`<div class="card stmt-src" style="margin:6px 0">
+      <div class="small">${esc(s.relation||"")} <span class="badge">${esc(s.claim_type||"")}</span> <span class="badge ${badgeCls(s.evidence_level)}">${esc(s.evidence_level)}</span>
+        <span class="mono muted small">${esc(s.species||"")}${s.model_context?" / "+esc(s.model_context):""} · conf ${s.confidence}${s.contradicted?" · CONTRADICTED":""}</span></div>
+      <div style="margin-top:4px">${esc(s.text)}</div>
+      <div class="small muted" style="margin-top:4px">entities: <b>${esc(s.subject||"")}</b> ${esc(s.direction||"")} <b>${esc(s.object||"")}</b></div>
+      <details class="srcbox"><summary>exact supporting source</summary>
+        <div class="small">${esc(d.title)}</div>
+        <div class="small mono">${esc(d.journal)} ${d.year||""} ${d.pmid?("PMID:"+d.pmid):""} ${d.doi?("DOI:"+d.doi):""}</div>
+        ${d.url?`<a href="${esc(d.url)}" target="_blank">${esc(d.url)}</a>`:""}
+        ${s.quotation?`<blockquote class="quote">${esc(s.quotation)}</blockquote>`:""}
+        ${(s.dose||s.endpoint||s.effect_size!=null)?`<div class="small mono muted">dose: ${esc(s.dose||"—")} · endpoint: ${esc(s.endpoint||"—")} · effect ${s.effect_size!=null?s.effect_size:"—"} ${esc(s.significance||"")}</div>`:""}
+      </details></div>`).join("") || "<div class='placeholder'>no claims extracted</div>";
     $("#paper-detail").innerHTML = `<div class="card">
       <h4>${esc(d.title)}</h4>
       <div class="el"><span class="el-k">Journal</span><span>${esc(d.journal)} (${d.year||"?"})</span></div>
