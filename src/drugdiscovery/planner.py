@@ -165,7 +165,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         )
         if has_compound:
             continue
-        pk = _params_key({"target_node_id": t.id})
+        pk = _params_key({"target_node_id": t.id, "max_n": 10})
         if _already_queued(session, ws_id, "compound_discovery", pk, terminal=True):
             continue
         created.append(repos.create_experiment(
