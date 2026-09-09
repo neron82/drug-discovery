@@ -341,6 +341,8 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False) -
             state["last_experiment"] = {"kind": ex.kind, "summary": summary, "ran_s": round(time.time() - started, 2)}
             ws.state_json = state
             ws.research_state = "running" if ws.research_enabled else ws.research_state
+        import gc  # docking loads gemmi/RDKit structures; free them between cycles
+        gc.collect()  # (API lived in a ~4GB cgroup scope and was OOM-killed twice)
         return {"kind": ex.kind, "summary": summary, "error": error or None,
                 "elapsed_s": round(time.time() - started, 2)}
 
