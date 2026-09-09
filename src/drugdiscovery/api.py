@@ -359,6 +359,10 @@ def compound_detail(cid: str):
         d = repos.get_compound(s, cid)
         if d is None:
             raise HTTPException(404, "compound not found")
+        # safety screen (spec 12): cheap deterministic screen, computed on read
+        if d.get("smiles"):
+            from .chem.safety import safety_alerts
+            d["safety"] = safety_alerts(d["smiles"])
         return d
 
 

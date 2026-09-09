@@ -186,6 +186,14 @@ async function openCompoundCard(cid){
         <span class="k">sources</span><span class="small">${Object.keys(c.sources||{}).map(esc).join(", ")||"—"}</span>
       </div></div>
       <div class="small mono muted" style="word-break:break-all;margin:8px 0">${esc(c.smiles||"")}</div>
+      <h3>Safety screen — structural predictions, NOT measured toxicology</h3>
+      ${(()=>{const sf=c.safety||{}; if(sf.error) return "<div class='muted small'>screen failed</div>";
+        const pains=(sf.pains||[]).map(p=>"<span class='badge speculative'>"+esc(p)+"</span>").join(" ")||"<span class='muted'>no PAINS</span>";
+        const rx=(sf.reactive_groups||[]).map(g=>"<span class='badge probable'>"+esc(g)+"</span>").join(" ")||"<span class='muted'>none</span>";
+        return "<div class='kvrow'><span class='k'>PAINS</span>"+pains+"</div>"
+          +"<div class='kvrow'><span class='k'>reactive groups</span>"+rx+"</div>"
+          +"<div class='kvrow'><span class='k'>aggregation</span><span class='badge'>"+esc(sf.aggregation_risk||"low")+"</span> <span class='k'>liability</span><span class='mono'>"+(sf.liability_score??"—")+"</span></div>"
+          +"<div class='small muted'>"+esc(sf.note||"")+"</div>";})()}
       <h3>Simulation history (${sims.length}) — predictions, not activity claims</h3>
       <table><thead><tr><th>Kind</th><th>Structure</th><th>Score</th><th>Status</th><th>Software/seed</th><th>Assumptions</th></tr></thead><tbody>${dockRows||'<tr><td colspan=6 class="muted">none yet</td></tr>'}</tbody></table>
       <h3>Similar compounds (${sim.filter(x=>x.id!==cid).length})</h3>
