@@ -5,7 +5,9 @@ from drugdiscovery import repos
 from drugdiscovery.db import init_db, get_session
 from drugdiscovery import critique as crit
 from drugdiscovery import ranking
-
+from drugdiscovery import planner
+from drugdiscovery.config import settings
+from drugdiscovery.models import Experiment
 
 @pytest.fixture(autouse=True)
 def clean_db(tmp_path, monkeypatch):
@@ -149,3 +151,28 @@ def test_rank_weights_override_changes_composite():
         assert w["uncertainty"] == 1.0 and w["drug_likeness"] == 0.10
         expected = sum(d[k] * w[k] for k in d) / sum(w.values())
         assert over["composite"] == pytest.approx(expected, abs=1e-3)
+
+
+def test_planner_backpressure_does_not_add_jobs(monkeypatch):
+    with get_session() as s:
+        ws = repos.create_workspace(s, "Backpressure WS", "mpb")
+        monkeypatch.setattr(settings.research, "max_pending_experiments", 4)
+        for i in range(4):
+            repos.create_experiment(s, ws.id, "question_generation", params={"i": i})
+        s.commit()
+        created = planner.ensure_pipeline(s, ws)
+        assert created == []
+        assert s.query(Experiment).filter_by(workspace_id=ws.id).count() == 4
+
+
+def test_planner_cycle_safety_cap_limits_new_jobs(monkeypatch):
+    with get_session() as s:
+        ws = repos.create_workspace(
+            s, "Cycle Cap WS", "mpb",
+            config={"seed_queries": [f"query-{i}" for i in range(5)]},
+        )
+        monkeypatch.setattr(settings.research, "max_pending_experiments", 100)
+        monkeypatch.setattr(settings.research, "cycle_safety_cap", 2)
+        created = planner.ensure_pipeline(s, ws)
+        assert len(created) == 2
+        assert {x.kind for x in created} == {"literature_search"}
