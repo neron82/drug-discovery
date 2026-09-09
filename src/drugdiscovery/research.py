@@ -264,7 +264,7 @@ _SIM_KINDS = {"docking", "molecular_dynamics", "structure_analysis"}
 def _budget_gate(ws, kind: str) -> str | None:
     """Rolling 1-hour budget check against ws.state_json counters.
     Returns None if allowed, else the reason string."""
-    b = settings.budgets
+    b = settings.research.budgets
     state = dict(ws.state_json or {})
     bud = state.setdefault("budget", {"window_start": _utc_iso(), "lit": 0, "sim": 0})
     from datetime import datetime, timezone, timedelta
