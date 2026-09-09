@@ -42,6 +42,22 @@ def _already_queued(session, ws_id, kind, params_key):
     return False
 
 
+def _focus_term(cfg: dict) -> str:
+    """Primary tissue/phenotype focus for literature queries (config-driven)."""
+    tis = cfg.get("tissues") or []
+    phen = cfg.get("phenotype") or []
+    terms = (tis if len(tis) >= len(phen) else phen)
+    return terms[0] if terms else "disease mechanism"
+
+def _focus_query(cfg: dict) -> str:
+    """Config-driven body-region/phenotype filter for targeted searches."""
+    tis = cfg.get("tissues") or []
+    phen = cfg.get("phenotype") or []
+    parts = [t for t in (tis + phen) if t]
+    if not parts:
+        return "(e.g. tissue OR cell-type)"
+    return "(" + " OR ".join(parts) + ")"
+
 def _params_key(p: dict) -> str:
     return str(sorted((k, str(v)) for k, v in p.items()))
 
@@ -121,7 +137,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                 reason="Actively attempt to falsify current claims",
                 expected_information_gain=0.6, scientific_importance=0.8, confidence_impact=0.7,
                 computational_cost=1.0, priority=compute_priority(weights, 0.6, 0.8, 0.7, 1.0),
-                params={"topic": "androgenetic alopecia negative"}, worker="skeptic"))
+                params={"topic": f"{ws.disease or ws.name} negative"}, worker="skeptic"))
 
     # 5) open question generation
     if not state.get("open_questions"):
@@ -298,7 +314,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                            and (e.target.kind in ("drug", "compound", "drug_class") or e.source.kind in ("drug", "compound", "drug_class"))
                            for e in list(t.out_edges) + list(t.in_edges))
             if not has_link:
-                topic = f"{t.canonical_name} hair follicle mechanism"
+                topic = f"{t.canonical_name} {_focus_term(cfg)}"
                 if topic in targeted:
                     continue
                 created.append(repos.create_experiment(
@@ -308,7 +324,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                     expected_information_gain=0.7, scientific_importance=0.7,
                     confidence_impact=0.5, computational_cost=1.0,
                     priority=compute_priority(weights, 0.7, 0.7, 0.5, 1.0),
-                    params={"query": f"{t.canonical_name} AND (hair follicle OR alopecia) AND (inhibitor OR antagonist OR ligand OR treatment)",
+                    params={"query": f"{t.canonical_name} AND {_focus_query(cfg)} AND (inhibitor OR antagonist OR ligand OR treatment)",
                             "size": 8, "provider": settings.literature.get("default_provider", "europepmc")},
                     worker="director"))
                 targeted.append(topic)

@@ -75,7 +75,7 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
 
     if kind == "contradiction_search":
         provider = get_provider(params.get("provider"))
-        topic = params.get("topic", "androgenetic alopecia")
+        topic = params.get("topic", ws.disease or "disease")
         q = f"{topic} AND (negative OR \"no effect\" OR \"failed\" OR \"no association\" OR \"did not\")"
         records = provider.search(q, int(params.get("size", 8)))
         new = 0
@@ -244,8 +244,10 @@ def derive_open_questions(session, ws) -> list[str]:
                    any(e.source.kind in ("drug", "compound", "drug_class") for e in t.in_edges)
         if not has_drug:
             questions.append(f"Is {t.canonical_name} therapeutically targetable (known ligands/inhibitors) for {ws.disease or 'this disease'}?")
-    questions.append(f"Which follicle-relevant cell type (dermal papilla, keratinocyte) mediates the strongest phenotype effect?")
-    questions.append("Which mechanism, if modulated, most robustly extends anagen without driving unwanted androgen/off-target effects?")
+    cfg = ws.config_json or {}
+    cells = ", ".join(cfg.get("relevant_cell_types") or ["the relevant cell type"])
+    questions.append(f"Which disease-relevant cell type ({cells}) mediates the strongest phenotype effect?")
+    questions.append(f"Which mechanism, if modulated, most robustly reverses the phenotype ({', '.join(cfg.get('phenotype') or ['progression'])}) without driving unwanted off-target effects?")
     questions.append("Which reported associations fail replication or show negative results in independent cohorts?")
     questions.append("What are the major unresolved unknowns limiting the top-ranked hypothesis?")
     return list(dict.fromkeys(questions[:10]))

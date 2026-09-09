@@ -17,7 +17,7 @@ from .models import Hypothesis, KnowledgeType, Statement
 
 log = logging.getLogger("dd.hypoth")
 
-_SYSTEM = """You are the Hypotheses lead in an autonomous computational drug-discovery lab working on androgenetic alopecia.
+_SYSTEM = """You are the Hypotheses lead in an autonomous computational drug-discovery lab working on {disease}.
 Draft biologically plausible, testable mechanism hypotheses. You must ONLY reason from the supporting and
 counter evidence supplied to you — do not introduce new citations or invented facts. Mark everything
 clearly. Output STRICT JSON (no markdown):
@@ -95,9 +95,10 @@ def _draft(session, ws, llm, target, sup, contra, profile) -> Hypothesis | None:
         f"Evidence profile: overall_confidence={profile['overall_confidence']}, "
         f"independent_sources={profile['independent_sources']}, "
         f"contradiction_ratio={profile['contradiction_ratio']}\n\n"
-        "Draft one hypothesis focused on this target relevant to androgenetic alopecia pathogenesis and therapy."
+        "Draft one hypothesis focused on this target relevant to the clinical context ({disease}) of this workspace."
     )
-    data = llm.chat_json(_SYSTEM, user, temperature=0.4)
+    disease = (ws.disease or "the target disease").replace("_", " ")
+    data = llm.chat_json(_SYSTEM.format(disease=disease), user, temperature=0.4)
     title = (data.get("title") or f"{target.canonical_name} mechanism hypothesis").strip()
     body = data.get("body", "")
     if not body:
