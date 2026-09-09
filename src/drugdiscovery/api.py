@@ -421,6 +421,65 @@ def activity(ws_id: str):
         }
 
 
+# ---------------------------------------------------------------------------
+# Structures (Phase 3)
+# ---------------------------------------------------------------------------
+@app.get("/api/workspaces/{ws_id}/structures")
+def list_structures(ws_id: str):
+    from .models import Structure, Node
+    from sqlalchemy import select
+    with get_session() as s:
+        rows = s.execute(select(Structure).where(Structure.workspace_id == ws_id)
+                         .order_by(Structure.source.asc(), Structure.resolution.is_(None).asc(), Structure.resolution.asc())
+                         ).scalars().all()
+        node_ids = {r.protein_node_id for r in rows if r.protein_node_id}
+        names = {}
+        if node_ids:
+            ns = s.execute(select(Node).where(Node.id.in_(node_ids))).scalars().all()
+            names = {n.id: n.canonical_name for n in ns}
+        return [{
+            "id": r.id, "source": r.source, "source_id": r.source_id,
+            "protein": names.get(r.protein_node_id, "unlinked"),
+            "uniprot": r.uniprot_accession, "method": r.method,
+            "resolution": r.resolution, "organism": r.organism,
+            "ligand_count": len(r.ligands or []),
+            "ligands": (r.ligands or [])[:10],
+            "limitations": r.limitations, "fetched_at": _dt(r.fetched_at),
+        } for r in rows]
+
+
+@app.get("/api/structures/{sid}")
+def structure_detail(sid: str):
+    from .models import Structure, Node
+    from sqlalchemy import select
+    with get_session() as s:
+        r = s.get(Structure, sid)
+        if r is None:
+            raise HTTPException(404, "structure not found")
+        node = s.get(Node, r.protein_node_id) if r.protein_node_id else None
+        return {
+            "id": r.id, "source": r.source, "source_id": r.source_id,
+            "protein": node.canonical_name if node else None,
+            "protein_node_id": r.protein_node_id,
+            "uniprot": r.uniprot_accession, "method": r.method,
+            "resolution": r.resolution, "confidence": r.confidence,
+            "organism": r.organism, "ligands": r.ligands or [],
+            "file_hash": r.file_hash, "limitations": r.limitations,
+            "fetched_at": _dt(r.fetched_at),
+        }
+
+
+@app.get("/api/structures/{sid}/file")
+def structure_file(sid: str):
+    from .models import Structure
+    from fastapi.responses import FileResponse
+    with get_session() as s:
+        r = s.get(Structure, sid)
+    if r is None or not r.file_path:
+        raise HTTPException(404, "structure file not found")
+    return FileResponse(r.file_path, media_type="chemical/x-cif", filename=f"{r.source_id}.cif")
+
+
 # static frontend
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

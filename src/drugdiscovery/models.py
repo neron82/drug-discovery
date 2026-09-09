@@ -382,3 +382,28 @@ class Compound(Base):
     properties_json: Mapped[dict] = mapped_column(JSON, default=dict)
     research_status: Mapped[str] = mapped_column(String(24), default="catalogued")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+# ---------------------------------------------------------------------------
+# Protein structures (Phase 3) — PDB experimental + AlphaFold predicted
+# ---------------------------------------------------------------------------
+class Structure(Base):
+    __tablename__ = "structures"
+    __table_args__ = (UniqueConstraint("source", "source_id", name="uq_structure_source_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source: Mapped[str] = mapped_column(String(16), index=True)      # pdb | alphafold
+    source_id: Mapped[str] = mapped_column(String(32), index=True)   # 4-digit PDB id / AF-P10275-F1
+    protein_node_id: Mapped[str | None] = mapped_column(ForeignKey("nodes.id", ondelete="SET NULL"), nullable=True, index=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    uniprot_accession: Mapped[str] = mapped_column(String(16), default="", index=True)
+    method: Mapped[str] = mapped_column(String(24), default="")      # x-ray | cryo-em | nmr | predicted
+    resolution: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)  # pLDDT mean for AF
+    organism: Mapped[str] = mapped_column(String(80), default="")
+    chains: Mapped[list] = mapped_column(JSON, default=list)
+    ligands: Mapped[list] = mapped_column(JSON, default=list)        # [{pdb_id,name,compound_id}]
+    file_path: Mapped[str] = mapped_column(String(500), default="")  # local cif/pdb artifact
+    file_hash: Mapped[str] = mapped_column(String(64), default="")   # sha256 of file
+    limitations: Mapped[str] = mapped_column(Text, default="")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -137,6 +137,7 @@ async function renderMapPromise(){
 function bindView(view){
   if (view==="map") initGraph();
   if (view==="compounds") bindCompound();
+  if (view==="structures") bindStructures();
   if (view==="literature") bindLiterature();
 }
 function initGraph(){
@@ -244,7 +245,57 @@ function bindCompound(){
   };
 }
 
-async function renderStructures(){ return `<h1>Structural Biology</h1><div class="sub">Phase 3 module · PDB/AlphaFold structures, binding pockets, 3D viewer (Mol*/3Dmol). Not yet implemented.</div><div class="placeholder">Scheduled for Phase 3</div>`; }
+async function renderStructures(){
+  const S = await api(`/workspaces/${state.ws.id}/structures`);
+  const rows = S.length ? S.map(st=>`<div class="struct-card">
+    <div class="struct-head"><span class="badge ${st.source==='pdb'?'fact':'pred'}">${st.source==='pdb'?'PDB experimental':'AlphaFold prediction'}</span>
+      <b>${esc(st.source_id)}</b> \u00b7 ${esc(st.protein||'unlinked')}</div>
+    <div class="meta">${st.method?esc(st.method):''}${st.resolution?' \u00b7 '+st.resolution+' \u00c5':''} \u00b7 ${st.ligand_count} ligand(s)</div>
+    ${st.ligands&&st.ligands.length?`<div class="ligands">${st.ligands.slice(0,6).map(l=>`<span class="chip">${esc(l.comp_id)} ${esc(l.name||'')}</span>`).join('')}</div>`:''}
+    ${st.limitations?`<div class="lim">${esc(st.limitations)}</div>`:''}
+    <button class="btn view3d" data-sid="${st.id}" data-src="${esc(st.source_id)}" data-kind="${st.source}">View in 3D</button>
+  </div>`).join('') : `<div class="placeholder">No structures yet — the structural biologist acquires them from PDB/AlphaFold during research cycles.</div>`;
+  return `<h1>Structural Biology</h1>
+    <div class="sub">Experimental PDB entries and AlphaFold models per target. Predicted models are labelled and never treated as facts.</div>
+    <div class="struct-grid">${rows}</div>
+    <div id="viewer-modal" class="modal" hidden><div class="modal-box">
+      <div class="modal-head"><span id="viewer-title"></span><button class="btn" id="viewer-close">Close</button></div>
+      <div id="viewer-3d" class="viewer-3d"></div>
+      <div class="modal-foot">Source: <span id="viewer-src"></span></div>
+    </div></div>`;
+}
+
+let _3dmolLoaded = null;
+function load3dmol(){ if(!_3dmolLoaded) _3dmolLoaded = new Promise((res,rej)=>{const s=document.createElement('script');s.src='/static/vendor/3dmol.min.js';s.onload=res;s.onerror=()=>rej(new Error('3dmol load failed'));document.head.appendChild(s);}); return _3dmolLoaded; }
+
+async function openViewer(sid, srcId, kind){
+  const modal = document.getElementById('viewer-modal');
+  modal.hidden = false;
+  document.getElementById('viewer-title').textContent = (kind==='pdb'?'PDB ':'AlphaFold ')+srcId+' \u2014 3D viewer';
+  document.getElementById('viewer-src').textContent = kind==='pdb'?'Protein Data Bank (experimental coordinates)':'AlphaFold DB (predicted model \u2014 hypothesis-grade, not experimental)';
+  const holder = document.getElementById('viewer-3d');
+  holder.innerHTML = "<div class='muted'>Loading viewer\u2026</div>";
+  try{
+    await load3dmol();
+    const meta = await api(`/structures/${sid}`);
+    const txt = await (await fetch(`/structures/${sid}/file`)).text();
+    holder.innerHTML = '';
+    const viewer = $3Dmol.createViewer(holder, {backgroundColor:'#0d1117'});
+    viewer.addModel(txt, "mmcif");
+    viewer.setStyle({}, {cartoon:{color:'spectrum'}});
+    viewer.setStyle({hetflag:true}, {stick:{radius:0.25}, sphere:{radius:1.2, opacity:0.9}});
+    viewer.zoomTo();
+    viewer.render();
+    viewer.zoom(0.8); viewer.render();
+  }catch(e){ holder.innerHTML = "<div class='muted'>viewer error: "+esc(String(e.message||e))+"</div>"; }
+}
+
+function bindStructures(){
+  document.querySelectorAll('.view3d').forEach(b=> b.onclick = ()=> openViewer(b.dataset.sid, b.dataset.src, b.dataset.kind));
+  const c = document.getElementById('viewer-close');
+  if(c) c.onclick = ()=> document.getElementById('viewer-modal').hidden = true;
+}
+
 async function renderSimulations(){ return `<h1>Simulations</h1><div class="sub">Phase 4 module · docking (Vina/smina), MD (OpenMM). Queued simulation-type experiments appear here.</div><div class="placeholder">Scheduled for Phase 4</div>`; }
 
 async function renderLiterature(){

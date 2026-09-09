@@ -165,6 +165,24 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
         return f"{len(hits)} similarity neighbours for {seed or 'query'}", {"n": len(hits),
                "hits": [{h['name']: h['similarity']} for h in hits]}
 
+    if kind == "structure_analysis":
+        from .struct import acquisition
+        node = None
+        if params.get("node_id"):
+            node = session.get(Node, params["node_id"])
+        if node is None:
+            rep = acquisition.acquire_structures(session, ws, limit=int(params.get("limit", 6)))
+        else:
+            r1 = acquisition.acquire_for_target(session, ws, node)
+            rep = {"targets_scanned": 1, "acquired_new": r1.get("new", 0),
+                   "reports": [{"node": node.canonical_name, **r1}]}
+        n_new = rep.get("acquired_new", 0)
+        repos.add_timeline(session, ws.id, "structural_biologist", "discovery",
+                           f"Structure acquisition: scanned {rep.get('targets_scanned', 0)} targets, "
+                           f"{n_new} new structures stored (PDB/AlphaFold)",
+                           {"acquired_new": n_new})
+        return (f"structures: {n_new} new from {rep.get('targets_scanned', 0)} targets", rep)
+
     return f"Unhandled experiment kind: {kind}", {}
 
 

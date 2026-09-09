@@ -159,6 +159,24 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         if chem_made >= 2:
             break
 
+    # 5c) structural intelligence: experimental structures for evidence-backed targets
+    struct_made = 0
+    for t in n_targets:
+        if (t.properties or {}).get("structural", {}).get("acquired"):
+            continue
+        pk = _params_key({"node_id": t.id})
+        if _already_queued(session, ws_id, "structure_analysis", pk):
+            continue
+        created.append(repos.create_experiment(
+            session, ws_id, "structure_analysis", question=f"Structural coverage for {t.canonical_name}",
+            reason="Target lacks acquired structures — resolve UniProt/PDB/AlphaFold",
+            expected_information_gain=0.7, scientific_importance=0.7, confidence_impact=0.4,
+            computational_cost=0.4, priority=compute_priority(weights, 0.7, 0.7, 0.4, 0.4),
+            params={"node_id": t.id}, worker="structural_biologist"))
+        struct_made += 1
+        if struct_made >= 2:
+            break
+
     # 6) sustain the loop: when the queue is empty, deepen coverage on ligand-less
     #    top targets and the first open question (hysteresis via state['targeted_searches']).
     queued_now = session.execute(select(func.count()).select_from(Experiment).where(
