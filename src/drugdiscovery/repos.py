@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import (
-    Edge, Experiment, Hypothesis, JobStatus, KnowledgeType, Node, Paper, Statement,
+    Compound, Edge, Experiment, Hypothesis, JobStatus, KnowledgeType, Node, Paper, Statement,
     TimelineEntry, Workspace,
 )
 
@@ -272,3 +272,117 @@ def graph_projection(session: Session, ws_id: str) -> dict:
            "evidence_level": e.evidence_level, "confidence": round(e.confidence, 3),
            "knowledge_type": e.knowledge_type} for e in edges]
     return {"nodes": nl, "edges": el}
+
+
+# ---------------------------------------------------------------------------
+# Compound catalogue (Phase 2)
+# ---------------------------------------------------------------------------
+def upsert_compound(session: Session, *, name: str, canonical_smiles: str = "",
+                    inchikey: str = "", synonyms: list[str] | None = None,
+                    sources: dict | None = None, properties: dict | None = None,
+                    research_status: str = "catalogued") -> tuple[Compound, bool]:
+    """Insert or update a compound in the global catalogue.
+
+    Identity is structure-aware: primary key of dedup = InChIKey (computed
+    client-side by chem.engine). A compound is re-catalogued (matched by
+    inchikey) rather than duplicated. Returns (compound, created: bool).
+    """
+    if inchikey:
+        obj = session.execute(select(Compound).where(Compound.inchikey == inchikey)).scalar_one_or_none()
+        if obj is not None:
+            obj.canonical_smiles = canonical_smiles or obj.canonical_smiles
+            if name and name not in (obj.canonical_name,):
+                if obj.synonyms is None:
+                    obj.synonyms = []
+                obj.synonyms = _push_unique(obj.synonyms, name)
+            obj.properties_json = {**(obj.properties_json or {}), **(properties or {})}
+            obj.sources_json = {**(obj.sources_json or {}), **(sources or {})}
+            return obj, False
+    # new compound
+    fp = properties.get("fingerprint_hex") if properties else None
+    if not fp and canonical_smiles:
+        from .chem import morgan_fp_hex
+        fp = morgan_fp_hex(canonical_smiles)
+    props = {**(properties or {}), "fingerprint_hex": fp} if fp else (properties or {})
+    obj = Compound(
+        canonical_name=name or canonical_smiles[:80] or "unnamed",
+        synonyms=synonyms or [], canonical_smiles=canonical_smiles, inchikey=inchikey,
+        formula=props.get("formula", ""), molmass=props.get("molmass"),
+        logp=props.get("logp"), tpsa=props.get("tpsa"),
+        hbd=props.get("hbd"), hba=props.get("hba"), rotb=props.get("rotb"),
+        sources_json=sources or {}, properties_json=props, research_status=research_status,
+    )
+    session.add(obj)
+    session.flush()
+    return obj, True
+
+
+def _push_unique(lst: list, x) -> list:
+    return [*lst, x] if x not in lst else lst
+
+
+def list_compounds(session: Session, *, with_fp: bool = False) -> list[Compound]:
+    cols = [Compound.id, Compound.canonical_name, Compound.canonical_smiles,
+            Compound.formula, Compound.molmass, Compound.logp, Compound.tpsa,
+            Compound.hbd, Compound.hba, Compound.rotb, Compound.research_status,
+            Compound.created_at, Compound.properties_json, Compound.sources_json]
+    rows = session.execute(select(*cols).order_by(Compound.canonical_name)).all()
+    out = []
+    for r in rows:
+        d = {
+            "id": r[0], "name": r[1], "smiles": r[2], "formula": r[3], "molmass": r[4],
+            "logp": r[5], "tpsa": r[6], "hbd": r[7], "hba": r[8], "rotb": r[9],
+            "research_status": r[10], "created_at": r[11].isoformat() if r[11] else None,
+            "inchikey": (r[12] or {}).get("inchikey", ""),
+            "sources": r[13] or {},
+        }
+        if with_fp:
+            d["fingerprint_hex"] = (r[12] or {}).get("fingerprint_hex")
+        out.append(d)
+    return out
+
+
+def get_compound(session: Session, cid: str) -> dict | None:
+    c = session.get(Compound, cid)
+    if c is None:
+        return None
+    return {
+        "id": c.id, "name": c.canonical_name, "synonyms": c.synonyms or [],
+        "smiles": c.canonical_smiles, "inchi": c.inchi or "", "inchikey": c.inchikey,
+        "formula": c.formula, "molmass": c.molmass, "logp": c.logp, "tpsa": c.tpsa,
+        "hbd": c.hbd, "hba": c.hba, "rotb": c.rotb,
+        "sources": c.sources_json or {}, "properties": c.properties_json or {},
+        "research_status": c.research_status, "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
+def similarity_search(session: Session, fp_hex: str, limit: int = 20) -> list[dict]:
+    """Rank the catalogue by Morgan/Tanimoto similarity to fp_hex."""
+    from .chem import tanimoto
+    scored = []
+    for row in list_compounds(session, with_fp=True):
+        theirs = row.get("fingerprint_hex")
+        if not theirs:
+            continue
+        s = tanimoto(fp_hex, theirs)
+        if s > 0.0:
+            scored.append((s, row))
+    scored.sort(key=lambda t: -t[0])
+    return [{"similarity": s, **{k: row[k] for k in ("id", "name", "smiles", "formula", "molmass", "logp", "tpsa", "inchikey")}}
+            for s, row in scored[:limit]]
+
+
+def compound_node_edges(session: Session, ws_id: str, cid: str) -> dict:
+    """Return the KG node for a compound (kind=compound) plus its edges in a workspace."""
+    node = None
+    for n in session.execute(select(Node).where(Node.workspace_id == ws_id, Node.kind == "compound")).scalars().all():
+        if (n.properties or {}).get("compound_id") == cid:
+            node = n
+            break
+    if node is None:
+        return {"node": None, "edges": []}
+    edges = session.execute(select(Edge).where(
+        Edge.workspace_id == ws_id,
+        (Edge.source_id == node.id) | (Edge.target_id == node.id),
+    )).scalars().all()
+    return {"node": node, "edges": edges}

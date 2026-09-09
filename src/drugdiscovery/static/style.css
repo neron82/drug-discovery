@@ -104,3 +104,11 @@ tr:hover td{background:var(--bg2)}
 
 .el{display:grid;grid-template-columns:240px 1fr;gap:4px 10px;font-size:12px;padding:3px 0}
 .el .el-k{color:var(--muted)}
+
+/* compound cards */
+.compound-card{display:grid;grid-template-columns:120px 1fr;gap:12px;align-items:center}
+.compound-card .struct{width:120px;height:100px;background:#0d1117;border:1px solid var(--line2);border-radius:8px;padding:4px;object-fit:contain}
+.row{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.row label{display:flex;flex-direction:column;font-size:11px;color:var(--muted)}
+.row input,.row select{padding:7px;background:var(--bg2);border:1px solid var(--line2);border-radius:6px;color:var(--text);font:13px var(--mono)}
+.struct{max-width:100%}

@@ -267,6 +267,78 @@ def targets(ws_id: str):
         return cards
 
 
+# ---------------------------------------------------------------------------
+# Compounds (Phase 2)
+# ---------------------------------------------------------------------------
+@app.get("/api/compounds")
+def list_compounds():
+    with get_session() as s:
+        return repos.list_compounds(s)
+
+
+@app.get("/api/compounds/{cid}")
+def compound_detail(cid: str):
+    with get_session() as s:
+        d = repos.get_compound(s, cid)
+        if d is None:
+            raise HTTPException(404, "compound not found")
+        return d
+
+
+@app.get("/api/compounds/{cid}/svg")
+def compound_svg(cid: str):
+    from .chem import engine
+    from fastapi.responses import Response
+    with get_session() as s:
+        d = repos.get_compound(s, cid)
+    if d is None:
+        raise HTTPException(404, "compound not found")
+    svg = engine.svg_2d(d["smiles"])
+    return Response(content=svg, media_type="image/svg+xml")
+
+
+@app.get("/api/compounds/{cid}/similar")
+def compound_similar(cid: str, limit: int = Query(20), smiles: str = ""):
+    from .chem import engine
+    with get_session() as s:
+        if smiles:
+            fp = engine.morgan_fp_hex(smiles)
+        else:
+            d = repos.get_compound(s, cid)
+            fp = (d or {}).get("properties", {}).get("fingerprint_hex")
+        if not fp:
+            raise HTTPException(400, "no computable structure")
+        return repos.similarity_search(s, fp, limit=limit)
+
+
+@app.get("/api/workspaces/{ws_id}/compounds")
+def workspace_compounds(ws_id: str):
+    """Catalogue restricted to compounds wired into this workspace + their KG edges."""
+    from .chem import engine
+    from .models import Node, Edge
+    from sqlalchemy import select
+    with get_session() as s:
+        nodes = s.execute(select(Node).where(Node.workspace_id == ws_id,
+                                             Node.kind.in_(["compound", "drug"]))).scalars().all()
+        out = []
+        for n in nodes:
+            cid = (n.properties or {}).get("compound_id")
+            c = repos.get_compound(s, cid) if cid else None
+            edges = s.execute(select(Edge).where(Edge.workspace_id == ws_id,
+                                                 (Edge.source_id == n.id) | (Edge.target_id == n.id))).scalars().all()
+            targets = []
+            for e in edges:
+                other = e.target if e.source_id == n.id else e.source
+                if other.kind in ("receptor", "enzyme", "protein", "transcription_factor"):
+                    prov = e.provenance if isinstance(e.provenance, dict) else {}
+                    targets.append({"id": other.id, "name": other.canonical_name,
+                                    "relation": e.type, "pchembl": prov.get("pchembl"),
+                                    "evidence_level": e.evidence_level})
+            out.append({"node_id": n.id, "compound": c, "targets": targets})
+        out.sort(key=lambda x: (x["compound"] or {}).get("name", ""))
+        return out
+
+
 @app.get("/api/workspaces/{ws_id}/queue")
 def queue(ws_id: str):
     from .models import Experiment

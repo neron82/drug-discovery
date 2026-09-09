@@ -134,6 +134,31 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                 computational_cost=0.3, priority=compute_priority(weights, 0.5, 0.7, 0.3, 0.3),
                 params={}, worker="director"))
 
+    # 5b) chemical intelligence: measured chemical matter for evidence-backed targets
+    _COMPOUND_EDGE_TYPES = ("INHIBITS", "AGONIST_OF", "ANTAGONIST_OF", "BINDS_TO", "TARGETS")
+    _COMPOUND_KINDS = ("drug", "compound", "drug_class")
+    chem_made = 0
+    for t in n_targets:
+        has_compound = any(
+            e.type in _COMPOUND_EDGE_TYPES
+            and (e.target.kind in _COMPOUND_KINDS or e.source.kind in _COMPOUND_KINDS)
+            for e in list(t.out_edges) + list(t.in_edges)
+        )
+        if has_compound:
+            continue
+        pk = _params_key({"target_node_id": t.id})
+        if _already_queued(session, ws_id, "compound_discovery", pk):
+            continue
+        created.append(repos.create_experiment(
+            session, ws_id, "compound_discovery", question=f"Chemical matter for {t.canonical_name}",
+            reason="Target lacking catalogued molecules — pull measured ChEMBL activity",
+            expected_information_gain=0.8, scientific_importance=0.7, confidence_impact=0.6,
+            computational_cost=0.6, priority=compute_priority(weights, 0.8, 0.7, 0.6, 0.6),
+            params={"target_node_id": t.id, "max_n": 10}, worker="chemist"))
+        chem_made += 1
+        if chem_made >= 2:
+            break
+
     # 6) sustain the loop: when the queue is empty, deepen coverage on ligand-less
     #    top targets and the first open question (hysteresis via state['targeted_searches']).
     queued_now = session.execute(select(func.count()).select_from(Experiment).where(

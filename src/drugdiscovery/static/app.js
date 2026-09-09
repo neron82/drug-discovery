@@ -176,17 +176,73 @@ async function renderTargets(){
 
 async function renderCompounds(){
   if (!state.ws) return "<div class='placeholder'>No workspace.</div>";
-  const t = await api(`/workspaces/${state.ws.id}/targets`);
-  const ligands = new Set(); t.forEach(x=>(x.ligands||[]).forEach(l=>ligands.add(l)));
+  const wsC = await api(`/workspaces/${state.ws.id}/compounds`);
+  const cats = await api(`/compounds`);
+  const wired = wsC.filter(x=>x.compound);
+  const cards = wired.map(x=>{
+    const c=x.compound;
+    return `<div class="card compound-card">
+      <img class="struct" src="/api/compounds/${c.id}/svg" alt="${esc(c.name)}" loading="lazy"
+           onerror="this.style.display='none'"/>
+      <div><h4>${esc(c.name)}</h4>
+      <div class="small mono muted">${esc(c.formula||"")} · MW ${c.molmass??"–"} · logP ${c.logp??"–"} · TPSA ${c.tpsa??"–"}</div>
+      <div class="small mono muted" style="word-break:break-all">${esc(c.inchikey||"")}</div>
+      <div style="margin-top:6px">${(x.targets||[]).map(t=>`<span class="pill">→ ${esc(t.name)} <span class="muted">${esc(t.relation)}${t.pchembl?` · pChEMBL ${t.pchembl}`:""}</span></span>`).join(" ")||'<span class="muted small">no measured target link</span>'}</div>
+      </div></div>`; }).join("");
+  const sel = cats.map(c=>`<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
   return `<h1>Compound Library</h1>
-  <div class="sub">Phase 2 module · cheminformatics engine (RDKit) arrives next — schema + knowledge-graph mapping already live.</div>
-  <div class="cards">
-    <div class="card"><div class="k">Known ligands mapped from literature</div><div class="big">${ligands.size}</div></div>
-    <div class="card" style="grid-column:1/-1"><div class="k">Ligands with evidence</div>
-      <div style="margin-top:8px">${[...ligands].map(l=>`<span class="pill">${esc(l)}</span>`).join(" ")||'<span class="muted">none yet</span>'}</div></div>
+  <div class="sub">Structure-aware catalogue (InChIKey dedup) · RDKit descriptors · measured target links from ChEMBL</div>
+  <div class="stat-grid" style="margin-top:10px">
+    <div class="card"><div class="k">Catalogue</div><div class="big">${cats.length}</div></div>
+    <div class="card"><div class="k">Wired into workspace</div><div class="big">${wired.length}</div></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="k">Tanimoto similarity search (against catalogue)</div>
+    <div class="row" style="margin-top:8px">
+      <label>Query structure (SMILES)
+        <input id="sim-smiles" type="text" placeholder="Oc1ccccc1" style="min-width:260px"/></label>
+      <label>or catalogue compound
+        <select id="sim-seed"><option value="">— none —</option>${sel}</select></label>
+      <button id="btn-sim" class="btn btn-primary">Search</button>
+    </div>
+    <div class="row" style="margin-top:6px"><label>min similarity
+      <input id="sim-min" type="number" step="0.05" min="0" max="1" value="0.35" style="width:70px"/></label></div>
+    <div id="sim-results" class="small muted" style="margin-top:8px"></div>
+  </div>
+  <h3 style="margin-top:18px">Workspace compounds</h3>
+  <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(380px,1fr));margin-top:8px">
+    ${cards || '<div class="card muted">No catalogued compounds linked here yet. Run a research cycle — the chemical-discovery step pulls measured ChEMBL ligands for top targets.</div>'}
   </div>`;
 }
-function bindCompound(){}
+function bindCompound(){
+  const q=sel=>document.querySelector(sel);
+  const btn=q("#btn-sim");
+  if(!btn) return;
+  btn.onclick = async ()=>{
+    const smiles=q("#sim-smiles").value.trim();
+    const seed=q("#sim-seed").value;
+    const box=q("#sim-results");
+    if(!smiles && !seed){ box.innerHTML=""; return; }
+    box.innerHTML="searching…";
+    let cid="";
+    if(seed){
+      const all=await api(`/compounds`);
+      const hit=all.find(c=>c.name.toLowerCase()===seed.toLowerCase());
+      if(hit) cid=hit.id;
+    }
+    const where=cid?`/compounds/${cid}/similar`:`/compounds/${(await api(`/compounds`))[0]?.id}/similar?smiles=${encodeURIComponent(smiles)}`;
+    try{
+      let r=await api(where);
+      const min=parseFloat(q("#sim-min").value||0);
+      const rows=r.filter(x=>x.similarity>=min).map(x=>`<div class="row" style="gap:12px;align-items:center;border-bottom:1px solid #1c2230;padding:6px 0">
+        <img class="struct" style="width:64px;height:48px" src="/api/compounds/${x.id}/svg" alt="" onerror="this.style.display='none'"/>
+        <span>${esc(x.name)}</span><span class="mono muted">${esc(x.formula)}</span>
+        <span class="badge ${x.similarity>=0.6?'established':(x.similarity>=0.4?'probable':'speculative')}">${(x.similarity*100).toFixed(0)}%</span>
+      </div>`).join("")||"<div class='muted'>no matches above threshold</div>";
+      box.innerHTML=rows;
+    }catch(e){ box.innerHTML="<span class='muted'>error: "+esc(e.message||e)+"</span>"; }
+  };
+}
 
 async function renderStructures(){ return `<h1>Structural Biology</h1><div class="sub">Phase 3 module · PDB/AlphaFold structures, binding pockets, 3D viewer (Mol*/3Dmol). Not yet implemented.</div><div class="placeholder">Scheduled for Phase 3</div>`; }
 async function renderSimulations(){ return `<h1>Simulations</h1><div class="sub">Phase 4 module · docking (Vina/smina), MD (OpenMM). Queued simulation-type experiments appear here.</div><div class="placeholder">Scheduled for Phase 4</div>`; }

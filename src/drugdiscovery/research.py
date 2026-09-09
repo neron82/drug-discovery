@@ -103,6 +103,68 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
                            f"Proposed {len(questions)} open research questions", {"questions": questions[:8]})
         return f"{len(questions)} open questions defined", {"questions": questions[:8]}
 
+    # ---------------- Phase 2: chemical intelligence ----------------
+    if kind == "compound_discovery":
+        from .chem.catalogue import compounds_for_target_chembl
+        tpid = params.get("target_node_id")
+        tn = session.get(Node, tpid) if tpid else None
+        if tn is None:
+            return "target node not found", {"ingested": 0}
+        report = compounds_for_target_chembl(tn, session, ws, max_n=int(params.get("max_n", 12)))
+        repos.add_timeline(session, ws.id, "chemist", "success" if report.get("ok") else "warn",
+                           f"Chemical discovery vs {tn.label or tn.canonical_name}: {report.get('ingested', 0)} "
+                           f"catalogued ({report.get('reason', 'ChEMBL measured activity')})", report)
+        return (f"{report.get('ingested', 0)} compounds catalogued for {tn.label or tn.canonical_name}",
+                report)
+
+    if kind == "compound_catalogue_refresh":
+        from .chem.catalogue import fetch_from_pubchem
+        name = params.get("name")
+        if not name:
+            return "no compound name", {}
+        rec = fetch_from_pubchem(name)
+        if rec is None or not rec.smiles:
+            repos.add_timeline(session, ws.id, "chemist", "warn",
+                               f"PubChem: no structure for '{name}'", {"name": name})
+            return f"PubChem lookup failed for {name}", {"found": False}
+        props = {}
+        from .chem import engine, catalogue
+        cs = engine.canonical_smiles(rec.smiles)
+        key = engine.inchi_and_key(cs)[1] if cs else ""
+        compound, created = repos.upsert_compound(
+            session, name=name, canonical_smiles=cs, inchikey=key,
+            synonyms=rec.synonyms,
+            sources={"pubchem": {"cid": rec.source_id, "url": rec.source_url}},
+            properties=engine.descriptors(cs) if cs else {},
+        )
+        # wire a compound KG node (no edge without a measured target link)
+        repos.find_node(session, ws.id, "compound", name) or repos.upsert_node(
+            session, ws.id, "compound", name, label=name,
+            evidence_level="computational", confidence=0.1, knowledge_type="source_fact",
+            properties={"compound_id": compound.id, "inchikey": key})
+        repos.add_timeline(session, ws.id, "chemist", "info", f"PubChem catalogue {name} "
+                           f"[{key[:10]}…] {'created' if created else 'updated'}", {"cid": rec.source_id})
+        return f"Catalogued {name} [{key[:10]}…]", {"found": True, "created": created}
+
+    if kind == "similarity_expansion":
+        from .chem import engine
+        from .chem.providers import PubChemProvider
+        seed = params.get("seed")
+        smi = ""
+        if seed:
+            rec = PubChemProvider().fetch_by_name(seed)
+            smi = rec.smiles if rec else ""
+        elif params.get("smiles"):
+            smi = params["smiles"]
+        fp = engine.morgan_fp_hex(smi) if smi else None
+        if fp is None:
+            return "no valid structure for similarity", {}
+        hits = repos.similarity_search(session, fp, limit=int(params.get("limit", 20)))
+        repos.add_timeline(session, ws.id, "chemist", "info",
+                           f"Similarity search around {seed or smi}: {len(hits)} analogues found", {"hits": len(hits)})
+        return f"{len(hits)} similarity neighbours for {seed or 'query'}", {"n": len(hits),
+               "hits": [{h['name']: h['similarity']} for h in hits]}
+
     return f"Unhandled experiment kind: {kind}", {}
 
 
