@@ -38,6 +38,10 @@ def get_engine():
                 cur = dbapi_conn.cursor()
                 cur.execute("PRAGMA foreign_keys=ON")
                 cur.execute("PRAGMA journal_mode=WAL")
+                # WAL alone doesn't serialize writers: without busy_timeout any
+                # concurrent write (e.g. drain counter vs API insert) raises
+                # "database is locked" instantly. Wait 5s instead.
+                cur.execute("PRAGMA busy_timeout=5000")
                 cur.close()
 
     return _engine
