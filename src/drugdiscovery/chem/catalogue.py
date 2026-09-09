@@ -64,7 +64,7 @@ def catalogue_compound(session, ws, *, name: str, smiles: str = "", inchikey: st
     if activity and activity.get("target_node_id"):
         etype = _EDGE_BY_TYPE.get(activity.get("standard_type", ""), "TARGETS")
         confidence = max(0.1, min(1.0, (activity.get("pchembl") or 4.0) / 9.0))
-        from .models import Node
+        from ..models import Node  # noqa: PLC0415  (the only Node model lives at drugdiscovery.models, NOT chem.models)
         from sqlalchemy import select as _select
         tn = session.execute(_select(Node).where(
             Node.id == activity["target_node_id"], Node.workspace_id == ws.id)).scalar_one_or_none()
@@ -107,6 +107,26 @@ def compounds_for_target_chembl(target_node, session, ws, max_n: int = 12) -> di
     hits.sort(key=lambda t: 0 if t.get("organism") == "Homo sapiens" else 1)
     best = hits[0]
     records = prov.compounds_for_target(best["id"], min_pchembl=4.0, limit=max_n)
+    source_mechanism = False
+    if not records:
+        # fallback: known mechanism-of-action drugs when measured activity is thin
+        mechanisms = prov.mechanisms_for_target(best["id"], limit=max_n)
+        if mechanisms:
+            source_mechanism = True
+            records = [{
+                "molecule_chembl_id": r["molecule_chembl_id"],
+                "name": r["name"],
+                "smiles": r["smiles"],
+                "inchikey": r.get("inchikey", ""),
+                "standard_type": r.get("action_type") or "MECHANISM",
+                "standard_value": None,
+                "standard_units": None,
+                "relation": None,
+                "pchembl": None,
+                "assay_type": "B",
+                "mechanism": r.get("mechanism"),
+                "action_type": r.get("action_type"),
+            } for r in mechanisms]
     ingested = 0
     for rec in records:
         act = {
@@ -114,16 +134,18 @@ def compounds_for_target_chembl(target_node, session, ws, max_n: int = 12) -> di
             "target_node_id": target_node.id,
             "target_name": best.get("name"),
             "target_chembl_id": best["id"],
+            "source": "chembl_mechanism" if source_mechanism else "chembl",
         }
         try:
             r = catalogue_compound(
                 session, ws, name=rec.get("name") or rec["molecule_chembl_id"],
-                smiles=rec["smiles"], inchikey="", activity=act,
-                source="chembl", source_id=rec["molecule_chembl_id"],
+                smiles=rec["smiles"], inchikey=rec.get("inchikey", ""), activity=act,
+                source=act["source"], source_id=rec["molecule_chembl_id"],
                 source_url=f"https://www.ebi.ac.uk/chembl/compound_report_card/{rec['molecule_chembl_id']}/",
             )
             ingested += 1
         except Exception:  # noqa: BLE001
             log.warning("catalogue fail for %s: %s", rec.get("name"), exc_info=True)
     return {"ok": True, "target": best.get("name"), "chembl_id": best["id"],
-            "ingested": ingested, "n_records": len(records)}
+            "ingested": ingested, "n_records": len(records),
+            "source": "chembl_mechanism" if source_mechanism else "chembl"}

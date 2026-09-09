@@ -256,6 +256,52 @@ class ChEMBLProvider:
         ranked = sorted(dedup.values(), key=lambda r: -r["pchembl"])
         return ranked[:limit]
 
+    def mechanisms_for_target(self, target_chembl_id: str, limit: int = 12) -> list[dict]:
+        """Mechanism-of-action records (known drug / action type) against a target.
+
+        Fallback when measured activity records are thin: ChEMBL's mechanism table
+        annotates known drugs/defined actions per target. Each entry is resolved to
+        its molecule (name, InChIKey, SMILES) so it can be catalogued like an activity.
+        """
+        url = f"{CHEMBL}/mechanism?target_chembl_id={target_chembl_id}&limit=50"
+        try:
+            data = json.loads(_get(url))
+        except Exception:
+            return []
+        out: list[dict] = []
+        for m in (data.get("mechanisms") or []):
+            mid = m.get("molecule_chembl_id")
+            if not mid:
+                continue
+            mol = self._molecule(mid)
+            if not mol or not mol.get("smiles"):
+                continue
+            out.append({
+                "molecule_chembl_id": mid,
+                "name": mol.get("name"),
+                "smiles": mol["smiles"],
+                "inchikey": mol.get("inchikey", ""),
+                "action_type": m.get("action_type"),
+                "mechanism": m.get("mechanism_of_action"),
+                "source": "chembl_mechanism",
+            })
+        # dedupe by molecule, keep first listed action
+        dedup: dict[str, dict] = {r["molecule_chembl_id"]: r for r in out}
+        return list(dedup.values())[:limit]
+
+    def _molecule(self, molecule_chembl_id: str) -> dict | None:
+        url = f"{CHEMBL}/molecule/{molecule_chembl_id}"
+        try:
+            d = json.loads(_get(url))
+        except Exception:
+            return None
+        st = d.get("molecule_structures") or {}
+        return {
+            "name": d.get("pref_name"),
+            "inchikey": st.get("standard_inchi_key", ""),
+            "smiles": st.get("canonical_smiles"),
+        }
+
 
 def get_compound_provider(name: str | None = None):
     name = (name or "pubchem").lower()
