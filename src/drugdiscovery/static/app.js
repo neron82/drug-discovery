@@ -90,6 +90,7 @@ function renderView({view}){
   if (view==="compounds") return renderCompounds();
   if (view==="structures") return renderStructures();
   if (view==="simulations") return renderSimulations();
+  if (view==="candidates") return renderCandidates();
   if (view==="literature") return renderLiterature();
   if (view==="hypotheses") return renderHypotheses();
   if (view==="queue") return renderQueue();
@@ -295,6 +296,25 @@ function bindStructures(){
   document.querySelectorAll('.view3d').forEach(b=> b.onclick = ()=> openViewer(b.dataset.sid, b.dataset.src, b.dataset.kind));
   const c = document.getElementById('viewer-close');
   if(c) c.onclick = ()=> document.getElementById('viewer-modal').hidden = true;
+}
+
+
+async function renderCandidates(){
+  const R = await api(`/workspaces/${state.ws.id}/candidates`);
+  const C = R.candidates || [];
+  if (!C.length) return '<div class="empty">No compounds catalogued yet.</div>';
+  const DIMS = ["mechanism_relevance","target_confidence","binding_evidence","structural_coverage","drug_likeness","chemical_provenance","uncertainty"];
+  const bars = d => DIMS.map(k=>{
+    const v = d[k]||0;
+    return `<div class="dimrow"><span class="dimlbl">${k.replace(/_/g,' ')}</span><span class="dimbar"><i style="width:${Math.round(v*100)}%"></i></span><span class="dimval">${v.toFixed(2)}</span></div>`;
+  }).join("");
+  return `<div class="section-title">Candidate ranking — multi-factor triage (not biological proof)</div>
+    <div class="meta">Composite = weighted mean of inspectable dimensions; weights via <code>?weights={...}</code>.</div>` +
+    C.map(c=>`<div class="struct-card">
+      <div class="struct-head"><b>${esc(c.compound_name)}</b> &rarr; ${esc(c.target||'?')}
+        <span class="badge established">composite ${c.composite.toFixed(2)}</span></div>
+      <div class="meta">best docking ${c.best_docking!=null?c.best_docking.toFixed(2)+' kcal/mol':'—'}</div>
+      <div class="dims">${bars(c.dimensions)}</div></div>`).join("");
 }
 
 async function renderSimulations(){

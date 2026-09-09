@@ -543,6 +543,43 @@ def simulation_pose(sid: str):
 
 
 # static frontend
+@app.get("/api/workspaces/{ws_id}/candidates")
+def candidates(ws_id: str, weights: str = ""):
+    """Multi-factor candidate ranking (Spec section 31).
+
+    weights: optional JSON object overriding DEFAULT_WEIGHTS per dimension."""
+    from .ranking import DEFAULT_WEIGHTS, rank_candidates
+    overrides = None
+    if weights:
+        import json as _json
+        try:
+            overrides = _json.loads(weights)
+        except Exception:
+            raise HTTPException(status_code=400, detail="weights must be valid JSON")
+    with get_session() as s:
+        rows = rank_candidates(s, ws_id, overrides)
+    return {"candidates": rows, "default_weights": DEFAULT_WEIGHTS}
+
+
+@app.get("/api/workspaces/{ws_id}/critiques")
+def critiques(ws_id: str):
+    """Skeptic critique history: last adversarial review per hypothesis."""
+    from sqlalchemy import select as _select
+    from .models import Hypothesis as _Hyp
+    with get_session() as s:
+        hs = list(s.execute(_select(_Hyp).where(
+            _Hyp.workspace_id == ws_id)).scalars())
+        out = []
+        for h in hs:
+            last = (h.evidence_profile or {}).get("last_critique")
+            if isinstance(last, dict) and last.get("by") == "skeptic":
+                out.append({"hypothesis_id": h.id, "title": h.title,
+                            "status": h.status, "confidence": h.confidence,
+                            "critique": last})
+        out.sort(key=lambda r: r["critique"].get("at", ""), reverse=True)
+    return {"critiques": out}
+
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 

@@ -228,6 +228,32 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             worker="simulation"))
         dock_made += 1
 
+    # 5e) skeptic pass: adversarial critique of the strongest active hypotheses.
+    #     Deliberately cheap (one LLM call per hypothesis) and high information
+    #     gain: falsification is what makes the knowledge base trustworthy.
+    crit_h = list(session.execute(
+        select(Hypothesis).where(
+            Hypothesis.workspace_id == ws_id,
+            Hypothesis.status.in_(["active", "promising"]))
+        .order_by(Hypothesis.confidence.desc()).limit(3)).scalars())
+    for h in crit_h:
+        last = (h.evidence_profile or {}).get("last_critique", {})
+        last_at = last.get("at", "") if isinstance(last, dict) else ""
+        if last_at and h.updated_at and h.updated_at.isoformat() <= last_at:
+            continue  # already critiqued after last update
+        if _already_queued(session, ws_id, "hypothesis_critique", {"hypothesis_id": h.id}):
+            continue
+        created.append(repos.create_experiment(
+            session, ws_id, "hypothesis_critique",
+            question=f"Falsification attempt: {h.title[:80]}",
+            reason="High-confidence hypothesis has not been adversarially reviewed yet — "
+                   "the skeptic searches for alternative explanations and weaknesses",
+            expected_information_gain=0.8, scientific_importance=0.8, confidence_impact=0.8,
+            computational_cost=0.2,
+            priority=compute_priority(weights, 0.8, 0.8, 0.8, 0.2),
+            params={"hypothesis_id": h.id},
+            worker="skeptic"))
+
     # 6) sustain the loop: when the queue is empty, deepen coverage on ligand-less
     #    top targets and the first open question (hysteresis via state['targeted_searches']).
     queued_now = session.execute(select(func.count()).select_from(Experiment).where(

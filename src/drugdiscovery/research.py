@@ -196,6 +196,21 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
             {"score": rep["score"], "simulation_run_id": rep["simulation_run_id"]})
         return (rep["summary"], after)
 
+    if kind == "hypothesis_critique":
+        from . import critique
+        if llm is None:
+            return "hypothesis_critique requires an LLM", {}
+        if params.get("hypothesis_id"):
+            h = session.get(Hypothesis, params["hypothesis_id"])
+            if h is None:
+                return "Hypothesis not found", {}
+            res = critique.critique_hypothesis(session, ws, h, llm)
+            summary = f"Critique: verdict={res.get('verdict')} {res.get('before')}->{res.get('after')}"
+        else:
+            res = critique.critique_active(session, ws, llm, limit=int(params.get("limit", 3)))
+            summary = f"Skeptic pass: {len(res)} reviewed"
+        return (summary, {"results": res[:3]})
+
     return f"Unhandled experiment kind: {kind}", {}
 
 
