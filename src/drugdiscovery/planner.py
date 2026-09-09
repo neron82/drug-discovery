@@ -79,6 +79,25 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
     weights = weights or settings.research.default_weights
     ws_id = ws.id
     created: list[Experiment] = []
+    safety_cap = int(settings.research.cycle_safety_cap)
+
+    def _create(*args, **kwargs):
+        """Create at most cycle_safety_cap experiments in this planning pass."""
+        if safety_cap > 0 and len(created) >= safety_cap:
+            return None
+        ex = repos.create_experiment(session, *args, **kwargs)
+        created.append(ex)
+        return ex
+
+    pending = session.execute(select(func.count()).select_from(Experiment).where(
+        Experiment.workspace_id == ws_id,
+        Experiment.status.in_(["queued", "running"]),
+    )).scalar_one()
+    max_pending = int(settings.research.max_pending_experiments)
+    if max_pending > 0 and pending >= max_pending:
+        log.info("WS %s: planner backpressure pending=%d limit=%d", ws_id, pending, max_pending)
+        return created
+
     cfg = ws.config_json or {}
     seed_queries = cfg.get("seed_queries", [])
     state = ws.state_json or {}
@@ -97,13 +116,13 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             pk = _params_key({"query": q, "size": 10, "provider": settings.literature.get("default_provider", "europepmc")})
             if _already_queued(session, ws_id, "literature_search", pk):
                 continue
-            created.append(repos.create_experiment(
-                session, ws_id, "literature_search", question=f"Seed survey: {q}",
+            _create(
+                ws_id, "literature_search", question=f"Seed survey: {q}",
                 reason="Bootstrap knowledge graph from real literature",
                 expected_information_gain=0.9, scientific_importance=0.8, confidence_impact=0.5,
                 computational_cost=1.0, priority=compute_priority(weights, 0.9, 0.8, 0.5, 1.0),
                 params={"query": q, "size": 10, "provider": settings.literature.get("default_provider", "europepmc")},
-                worker="director"))
+                worker="director")
 
     # 2) extract new papers
     to_extract = [p for p in papers if p.status == "fetched"][:10]
@@ -111,23 +130,23 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         pk = _params_key({"paper_id": p.id})
         if _already_queued(session, ws_id, "paper_extraction", pk, terminal=True):
             continue
-        created.append(repos.create_experiment(
-            session, ws_id, "paper_extraction", question=f"Extract claims: {p.title[:60]}…",
+        _create(
+            ws_id, "paper_extraction", question=f"Extract claims: {p.title[:60]}…",
             reason="Convert raw abstract into structured KG claims",
             expected_information_gain=0.7, scientific_importance=0.6, confidence_impact=0.4,
             computational_cost=1.2, priority=compute_priority(weights, 0.7, 0.6, 0.4, 1.2),
-            params={"paper_id": p.id}, worker="biologist"))
+            params={"paper_id": p.id}, worker="biologist")
 
     # 3) hypothesis generation once there is evidence but few/zero hypotheses
     if n_extracted > 0 and n_hyp < 2:
         pk = _params_key({"limit": 3})
         if not _already_queued(session, ws_id, "hypothesis_generation", pk):
-            created.append(repos.create_experiment(
-                session, ws_id, "hypothesis_generation", question="Generate evidence-grounded hypotheses",
+            _create(
+                ws_id, "hypothesis_generation", question="Generate evidence-grounded hypotheses",
                 reason="Move from facts to testable mechanistic hypotheses",
                 expected_information_gain=0.8, scientific_importance=0.9, confidence_impact=0.6,
                 computational_cost=1.2, priority=compute_priority(weights, 0.8, 0.9, 0.6, 1.2),
-                params={"limit": 3}, worker="director"))
+                params={"limit": 3}, worker="director")
 
     # 4) contradiction search if contradictions present or few targets explained
     n_contra = session.execute(select(Statement).where(Statement.workspace_id == ws_id)).scalars().all()
@@ -135,24 +154,24 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
     if contradicts > 0:
         pk = _params_key({"topic": "contradictions"})
         if not _already_queued(session, ws_id, "contradiction_search", pk):
-            created.append(repos.create_experiment(
-                session, ws_id, "contradiction_search",
+            _create(
+                ws_id, "contradiction_search",
                 question="Search for contradicting/negative evidence",
                 reason="Actively attempt to falsify current claims",
                 expected_information_gain=0.6, scientific_importance=0.8, confidence_impact=0.7,
                 computational_cost=1.0, priority=compute_priority(weights, 0.6, 0.8, 0.7, 1.0),
-                params={"topic": f"{ws.disease or ws.name} negative"}, worker="skeptic"))
+                params={"topic": f"{ws.disease or ws.name} negative"}, worker="skeptic")
 
     # 5) open question generation
     if not state.get("open_questions"):
         pk = _params_key({})
         if not _already_queued(session, ws_id, "question_generation", pk):
-            created.append(repos.create_experiment(
-                session, ws_id, "question_generation", question=f"Propose next research questions for {ws.disease or ws.name}",
+            _create(
+                ws_id, "question_generation", question=f"Propose next research questions for {ws.disease or ws.name}",
                 reason="Define high-value unknowns that drive the next cycle",
                 expected_information_gain=0.5, scientific_importance=0.7, confidence_impact=0.3,
                 computational_cost=0.3, priority=compute_priority(weights, 0.5, 0.7, 0.3, 0.3),
-                params={}, worker="director"))
+                params={}, worker="director")
 
     # 5b) chemical intelligence: measured chemical matter for evidence-backed targets
     _COMPOUND_EDGE_TYPES = ("INHIBITS", "AGONIST_OF", "ANTAGONIST_OF", "BINDS_TO", "TARGETS")
@@ -169,12 +188,12 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         pk = _params_key({"target_node_id": t.id, "max_n": 10})
         if _already_queued(session, ws_id, "compound_discovery", pk, terminal=True):
             continue
-        created.append(repos.create_experiment(
-            session, ws_id, "compound_discovery", question=f"Chemical matter for {t.canonical_name}",
+        _create(
+            ws_id, "compound_discovery", question=f"Chemical matter for {t.canonical_name}",
             reason="Target lacking catalogued molecules — pull measured ChEMBL activity",
             expected_information_gain=0.8, scientific_importance=0.7, confidence_impact=0.6,
             computational_cost=0.6, priority=compute_priority(weights, 0.8, 0.7, 0.6, 0.6),
-            params={"target_node_id": t.id, "max_n": 10}, worker="chemist"))
+            params={"target_node_id": t.id, "max_n": 10}, worker="chemist")
         chem_made += 1
         if chem_made >= 2:
             break
@@ -187,12 +206,12 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         pk = _params_key({"node_id": t.id})
         if _already_queued(session, ws_id, "structure_analysis", pk, terminal=True):
             continue
-        created.append(repos.create_experiment(
-            session, ws_id, "structure_analysis", question=f"Structural coverage for {t.canonical_name}",
+        _create(
+            ws_id, "structure_analysis", question=f"Structural coverage for {t.canonical_name}",
             reason="Target lacks acquired structures — resolve UniProt/PDB/AlphaFold",
             expected_information_gain=0.7, scientific_importance=0.7, confidence_impact=0.4,
             computational_cost=0.4, priority=compute_priority(weights, 0.7, 0.7, 0.4, 0.4),
-            params={"node_id": t.id}, worker="structural_biologist"))
+            params={"node_id": t.id}, worker="structural_biologist")
         struct_made += 1
         if struct_made >= 2:
             break
@@ -237,8 +256,8 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             break
     for d in dockable:
         is_blind = d["structure"].ligands is None or not (d["structure"].ligands or [])
-        created.append(repos.create_experiment(
-            session, ws_id, "docking",
+        _create(
+            ws_id, "docking",
             question=f"Virtual screening: {d['compound'].canonical_name} vs {d['target'].canonical_name}",
             reason=("Target structure has NO co-crystal ligand — blind whole-protein "
                     "box docking (site-agnostic, weaker evidence)" if is_blind else
@@ -251,7 +270,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                                       0.3 if is_blind else 0.4, 0.9),
             params={"structure_id": d["structure"].id, "compound_id": d["compound"].id,
                     "compound_smiles": d["compound"].canonical_smiles},
-            worker="simulation"))
+            worker="simulation")
         dock_made += 1
 
     # 5e) skeptic pass: adversarial critique of the strongest active hypotheses.
@@ -270,8 +289,8 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             continue  # already critiqued after last update
         if _already_queued(session, ws_id, "hypothesis_critique", {"hypothesis_id": h.id}):
             continue
-        created.append(repos.create_experiment(
-            session, ws_id, "hypothesis_critique",
+        _create(
+            ws_id, "hypothesis_critique",
             question=f"Falsification attempt: {h.title[:80]}",
             reason="High-confidence hypothesis has not been adversarially reviewed yet — "
                    "the skeptic searches for alternative explanations and weaknesses",
@@ -279,7 +298,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             computational_cost=0.2,
             priority=compute_priority(weights, 0.8, 0.8, 0.8, 0.2),
             params={"hypothesis_id": h.id},
-            worker="skeptic"))
+            worker="skeptic")
 
     # 5f) molecular dynamics: expensive secondary validation, gated to the
     # top-scoring docked structures (spec §11 — never applied indiscriminately).
@@ -321,8 +340,8 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             SimulationRun.kind == "md", SimulationRun.status == "done")).scalar_one()
         if done_md:
             continue
-        created.append(repos.create_experiment(
-            session, ws_id, "molecular_dynamics",
+        _create(
+            ws_id, "molecular_dynamics",
             question=f"Pose persistence / pocket thermal stability: {sid[:8]}",
             reason=f"Docking scored {best} kcal/mol — validate the pose and binding-"
                    "pocket stability under explicit-solvent dynamics, and record pocket "
@@ -330,7 +349,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             expected_information_gain=0.55, scientific_importance=0.7,
             confidence_impact=0.5, computational_cost=0.9,
             priority=compute_priority(weights, 0.55, 0.7, 0.5, 0.9),
-            params={"structure_id": sid}, worker="simulation"))
+            params={"structure_id": sid}, worker="simulation")
 
     # 6) sustain the loop: when the queue is empty, deepen coverage on ligand-less
     #    top targets and the first open question (hysteresis via state['targeted_searches']).
@@ -350,8 +369,8 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                 topic = f"{t.canonical_name} {_focus_term(cfg)}"
                 if topic in targeted:
                     continue
-                created.append(repos.create_experiment(
-                    session, ws_id, "literature_search",
+                made = _create(
+                    ws_id, "literature_search",
                     question=f"Targeted expansion: {t.canonical_name}",
                     reason="Evidence-backed target lacks mapped chemical matter — search deeper",
                     expected_information_gain=0.7, scientific_importance=0.7,
@@ -359,7 +378,9 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                     priority=compute_priority(weights, 0.7, 0.7, 0.5, 1.0),
                     params={"query": f"{t.canonical_name} AND {_focus_query(cfg)} AND (inhibitor OR antagonist OR ligand OR treatment)",
                             "size": 8, "provider": settings.literature.get("default_provider", "europepmc")},
-                    worker="director"))
+                    worker="director")
+                if made is None:
+                    break
                 targeted.append(topic)
                 changed = True
                 if len(created) >= 2:
@@ -371,8 +392,8 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                 qtext = questions[0].get("q", "") if isinstance(questions[0], dict) else str(questions[0])
                 topic = _topic_from_question(qtext)
                 if topic and topic not in targeted:
-                    created.append(repos.create_experiment(
-                        session, ws_id, "literature_search",
+                    made = _create(
+                        ws_id, "literature_search",
                         question=f"Open question exploration: {qtext[:60]}",
                         reason="Pursue a defined open research question",
                         expected_information_gain=0.6, scientific_importance=0.8,
@@ -380,7 +401,9 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
                         priority=compute_priority(weights, 0.6, 0.8, 0.3, 1.0),
                         params={"query": topic, "size": 8,
                                 "provider": settings.literature.get("default_provider", "europepmc")},
-                        worker="director"))
+                        worker="director")
+                    if made is None:
+                        return created
                     targeted.append(topic)
                     changed = True
         if changed:
