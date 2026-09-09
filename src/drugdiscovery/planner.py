@@ -7,6 +7,7 @@ Deterministic + transparent (no hidden logic), so autonomy is auditable.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -290,7 +291,29 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
         .having(func.min(SimulationRun.score) <= -5.0)
         .order_by(func.min(SimulationRun.score).asc()).limit(2)).all()
     md_candidates = [(sid, round(score, 2)) for sid, score in md_sel if sid]
+    md_max_atoms = 20_000  # CPU safety budget for explicit-solvent MD
     for sid, best in md_candidates:
+        structure = session.get(Structure, sid)
+        if structure and structure.file_path:
+            try:
+                atom_count = sum(
+                    1 for line in Path(structure.file_path).read_text(errors="ignore").splitlines()
+                    if line.startswith("ATOM  ")
+                )
+            except OSError:
+                atom_count = 0
+            if atom_count > md_max_atoms:
+                state = dict(ws.state_json or {})
+                skipped = dict(state.get("md_skipped") or {})
+                skipped[sid] = {
+                    "reason": "protein atom count exceeds CPU MD budget",
+                    "atom_count": atom_count,
+                    "max_protein_atoms": md_max_atoms,
+                }
+                state["md_skipped"] = skipped
+                ws.state_json = state
+                log.info("Skipping MD for %s: %d atoms > %d budget", sid, atom_count, md_max_atoms)
+                continue
         if _already_queued(session, ws_id, "molecular_dynamics", {"structure_id": sid}, terminal=True):
             continue
         done_md = session.execute(select(func.count()).select_from(SimulationRun).where(
