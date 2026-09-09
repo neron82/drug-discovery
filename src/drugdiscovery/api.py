@@ -584,6 +584,7 @@ def list_simulations(ws_id: str):
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "pose_path": r.pose_path, "params": r.params_json,
                 "structure_id": r.structure_id, "compound_id": r.compound_id,
+                "receptor_hash": r.receptor_hash, "ligand_hash": r.ligand_hash,
                 "compound_name": names.get(r.compound_id),
                 "assumptions": r.assumptions,
             }
@@ -606,6 +607,49 @@ def simulation_detail(sid: str):
         "params": r.params_json, "assumptions": r.assumptions, "status": r.status,
         "error": r.error, "created_at": r.created_at.isoformat() if r.created_at else None,
     }
+
+
+@app.post("/api/simulations/{sid}/reproduce")
+def reproduce_simulation(sid: str):
+    """Spec 20: re-enqueue an experiment with the exact recorded parameters
+    (same structure, compound, seed, box, exhaustiveness). The executor re-runs
+    it on the next cycle; hashes let the new run be compared against the old."""
+    from .models import SimulationRun, Structure, Compound
+    from sqlalchemy import select
+    with session_scope() as s:
+        r = s.get(SimulationRun, sid)
+        if r is None:
+            raise HTTPException(404, "simulation run not found")
+        if r.status != "done":
+            raise HTTPException(409, "only completed runs can be reproduced")
+        params = dict(r.params_json or {})
+        params["structure_id"] = r.structure_id
+        params["seed"] = r.seed
+        if r.kind == "docking":
+            # recorded box = pocket size + engine padding (default 4.0 A) -> rebuild pocket
+            if params.get("center") and params.get("box_size"):
+                params["pocket"] = {"center": params["center"],
+                                    "size": float(params["box_size"][0]) - 4.0}
+            if r.compound_id:
+                c = s.get(Compound, r.compound_id)
+                if c:
+                    params["compound_id"] = c.id
+                    params["compound_smiles"] = c.canonical_smiles
+        elif r.kind == "md":
+            params.setdefault("steps", 2000)
+            params.setdefault("temperature", 300.0)
+        st = s.get(Structure, r.structure_id) if r.structure_id else None
+        ex = repos.create_experiment(
+            s, r.workspace_id, r.kind,
+            question=f"Reproduce simulation {sid[:8]} ({r.software} {r.software_version})",
+            reason="Explicit reproduction request (spec 20): identical recorded "
+                   "parameters, seed, and inputs; compare hashes and score afterwards.",
+            expected_information_gain=0.3, scientific_importance=0.4,
+            confidence_impact=0.2, computational_cost=0.9, priority=0.95,
+            params=params, worker="simulation")
+        return {"experiment_id": ex.id, "kind": r.kind,
+                "original_hashes": {"receptor": r.receptor_hash, "ligand": r.ligand_hash},
+                "state": "queued"}
 
 
 @app.get("/api/simulations/{sid}/pose")

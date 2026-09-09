@@ -452,6 +452,12 @@ function bindSimulations(){
   document.querySelectorAll('.viewpose').forEach(b=> { if(!b.disabled) b.onclick = ()=> openPoseViewer(b.dataset.sid, b.textContent.trim()); });
   const c = document.getElementById('pose-close');
   if(c) c.onclick = ()=> document.getElementById('pose-modal').hidden = true;
+  document.querySelectorAll('.repro').forEach(b=> { if(!b.disabled) b.onclick = async ()=>{
+    b.disabled = true; b.textContent = "queuing…";
+    try{ const res = await api(`/simulations/${b.dataset.sid}/reproduce`, {method:"POST"});
+      b.textContent = "queued "+res.experiment_id.slice(0,8);
+    }catch(e){ b.textContent = "failed"; b.disabled = false; }
+  }; });
 }
 
 async function renderLiterature(){
