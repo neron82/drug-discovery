@@ -248,7 +248,65 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             .limit(1)).scalar_one_or_none()
         if structure is None:
             continue
-        blind = not (structure.ligands or [])
+        # valid co-crystal ligand detection (must match runner.py: a ligand
+        # entry with a usable comp_id) — malformed truthy metadata like [None]
+        # must not bypass the blind-box guard.
+        ligands = structure.ligands or []
+        comp_ids = [l.get("comp_id") for l in ligands if isinstance(l, dict)]
+        comp_ids = [c for c in comp_ids if c]
+        blind = not comp_ids
+        # HARD BOX GUARD (planner side): a whole-protein blind box on a large
+        # structure exceeds MAX_BOX_EDGE and would be refused by DockingEngine
+        # (and historically exhausted memory). Skip it here (fail fast, with
+        # provenance) instead of queueing jobs that all fail. Fail CLOSED on
+        # errors: persist skip provenance rather than queueing an unsafe job.
+        if blind:
+            fp = structure.file_path
+            if fp and Path(fp).exists():
+                try:
+                    from .sim import pocket_blind
+                    from .sim.engine import MAX_BOX_EDGE, DEFAULT_BOX_PADDING
+                    pk = pocket_blind(fp)
+                    edge = float(pk["size"]) + DEFAULT_BOX_PADDING
+                    if edge > MAX_BOX_EDGE:
+                        state = dict(ws.state_json or {})
+                        skipped = dict(state.get("docking_skipped") or {})
+                        skipped[structure.id] = {
+                            "reason": "blind box edge exceeds safety limit",
+                            "edge_A": round(edge, 1),
+                            "max_edge_A": MAX_BOX_EDGE,
+                        }
+                        state["docking_skipped"] = skipped
+                        ws.state_json = state
+                        log.info("Skipping oversized blind docking structure %s (edge %.1f A > %d A)",
+                                 structure.source_id, edge, MAX_BOX_EDGE)
+                        continue
+                except Exception as e:
+                    # fail closed: persist skip provenance so we do NOT queue an
+                    # unsafe job we could not verify.
+                    state = dict(ws.state_json or {})
+                    skipped = dict(state.get("docking_skipped") or {})
+                    skipped[structure.id] = {
+                        "reason": f"could not compute blind box: {e}",
+                        "error": str(e)[:200],
+                    }
+                    state["docking_skipped"] = skipped
+                    ws.state_json = state
+                    log.warning("Failing closed on blind box for %s: %s", structure.source_id, e)
+                    continue
+            else:
+                # fail closed: a blind structure with no readable file cannot be
+                # verified for box size; persist skip provenance and do not queue.
+                state = dict(ws.state_json or {})
+                skipped = dict(state.get("docking_skipped") or {})
+                skipped[structure.id] = {
+                    "reason": "blind structure has no readable file_path; cannot verify box size",
+                }
+                state["docking_skipped"] = skipped
+                ws.state_json = state
+                log.warning("Failing closed on blind structure %s (no readable file_path)",
+                            structure.source_id)
+                continue
         # a compound whose targets include this target
         for c in compounds:
             # ONE params dict feeds both the dedup guard and create_experiment —
@@ -259,13 +317,13 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             if _already_queued(session, ws_id, "docking", _params_key(pdict), terminal=True):
                 continue
             dockable.append({"structure": structure, "compound": c,
-                             "target": t})
+                             "target": t, "blind": blind})
             if len(dockable) >= 4:
                 break
         if len(dockable) >= 4:
             break
     for d in dockable:
-        is_blind = d["structure"].ligands is None or not (d["structure"].ligands or [])
+        is_blind = d["blind"]
         _create(
             ws_id, "docking",
             question=f"Virtual screening: {d['compound'].canonical_name} vs {d['target'].canonical_name}",

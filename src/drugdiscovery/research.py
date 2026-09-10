@@ -374,6 +374,9 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False,
         # persisted in a fresh short transaction afterwards.
         session.commit()
         summary, result, error = "", {}, ""
+        # Workers may replace result_json; retain interruption/recovery history
+        # independently so finishing a recovered job cannot erase its provenance.
+        prior_result = dict(ex.result_json or {})
         started = time.time()
         try:
             summary, result = execute_experiment(session, ws, ex, llm)
@@ -383,6 +386,7 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False,
             log.exception("experiment %s failed", ex.kind)
         finally:
             status = JobStatus.DONE.value if not error else JobStatus.FAILED.value
+            result = {**prior_result, **(ex.result_json or {}), **result}
             repos.mark_experiment(session, ex, status, result_summary=summary, result_json=result, error=error)
             # information gain: did this cycle add ANY new evidence/matter?
             after = _entity_counts(session, ws_id)
@@ -397,7 +401,9 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False,
             # stagnation stop: the loop is done learning — pause honestly
             limit = int(settings.research.stagnation_limit)
             if limit > 0 and state["consecutive_no_gain"] >= limit:
-                ws.research_enabled = False
+                # set_research_enabled transitions research_state to "paused"
+                # (a bare flag flip leaves state "running" while disabled).
+                repos.set_research_enabled(session, ws, False)
                 repos.add_timeline(session, ws.id, "director", "warn",
                                    f"Research paused: {state['consecutive_no_gain']} consecutive "
                                    f"cycles without new evidence (stagnation stop). "

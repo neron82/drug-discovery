@@ -40,6 +40,9 @@ DEFAULT_N_POSES = 9
 # boxes (pocket_from_ligand) are ~15-25 A and pass comfortably. 40 A allows
 # small/medium whole-protein blind docking while bounding the map grid.
 MAX_BOX_EDGE = 40.0
+# Default padding (Angstrom) added to a pocket size to form the final Vina box
+# edge. Shared with planner admission so the guard cannot drift from dock().
+DEFAULT_BOX_PADDING = 4.0
 
 
 def _sha256(path: Path) -> str:
@@ -63,7 +66,7 @@ class DockingEngine:
 
     # -- one-shot, fully reproducible --------------------------------------
     def dock(self, *, cif_path, pocket, smiles, work_dir, exhaustiveness=24,
-             n_poses=9, center=None, box_padding=4.0) -> dict:
+             n_poses=9, center=None, box_padding=DEFAULT_BOX_PADDING) -> dict:
         """Perform a docking run and return a reproducibility record dict.
 
         pocket: dict from pocket_from_ligand() OR an explicit box:

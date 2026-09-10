@@ -11,6 +11,11 @@ Covers the deterministic, network-free pieces:
 
 The real OpenMM/Vina/LLM integration is exercised as a live smoke run, not here.
 """
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
+
 import pytest
 from sqlalchemy import select
 
@@ -243,6 +248,46 @@ def test_run_cycle_refuses_when_lease_held_by_other():
         assert ex.status == JobStatus.QUEUED.value, "refused cycle must not execute work"
 
 
+@pytest.mark.parametrize("fails", [False, True], ids=["success", "error"])
+def test_run_cycle_preserves_recovered_job_history(monkeypatch, fails):
+    lifecycle = {
+        "recovery": {"previous_worker": "research-api:old", "attempt": 1},
+        "interruption": {"reason": "worker restarted"},
+        "cancellation_history": [{"reason": "operator stopped research"}],
+    }
+
+    def fake_execute(session, ws, ex, llm):
+        # Simulation workers replace result_json before returning or failing.
+        ex.result_json = {"simulation_run_id": "recovered-run", "stage": "prepared"}
+        if fails:
+            raise RuntimeError("simulation failed after preparation")
+        return "docking complete", {"score": -7.5, "stage": "docked"}
+
+    monkeypatch.setattr(research, "execute_experiment", fake_execute)
+    with get_session() as s:
+        ws = _mk_ws(s)
+        ex = _mk_experiment(s, ws.id, kind="docking", priority=10.0)
+        ex.result_json = {**lifecycle, "stage": "interrupted"}
+        s.commit()
+        wid, eid = ws.id, ex.id
+
+    research.run_cycle(wid, llm=Mock(), force=True, holder="recovery-history-test")
+
+    with get_session() as s:
+        ex = s.get(Experiment, eid)
+        assert ex.status == (JobStatus.FAILED.value if fails else JobStatus.DONE.value)
+        for key, value in lifecycle.items():
+            assert ex.result_json[key] == value
+        assert ex.result_json["simulation_run_id"] == "recovered-run"
+        if fails:
+            assert ex.error == "simulation failed after preparation"
+            assert ex.result_json["stage"] == "prepared"
+        else:
+            assert not ex.error
+            assert ex.result_json["score"] == -7.5
+            assert ex.result_json["stage"] == "docked"
+
+
 # ---------------------------------------------------------------------------
 # Stagnation stop
 # ---------------------------------------------------------------------------
@@ -273,6 +318,8 @@ def test_stagnation_pauses_workspace(monkeypatch):
         assert ws.research_enabled is False, \
             "workspace must pause after consecutive no-gain cycles"
         assert (ws.state_json or {}).get("consecutive_no_gain", 0) >= 3
+        assert ws.research_state == "paused"
+        assert repos.drain_lease_holder(s, wid) is None
 
 
 def test_gain_resets_stagnation_counter(monkeypatch):
@@ -425,33 +472,188 @@ def test_stop_then_immediate_start_respawns(monkeypatch):
     assert len(holders) == 2, f"expected 2 spawned tasks, got {len(holders)}"
     assert holders[0] != holders[1], "holders must be unique per task"
     assert all(h.startswith("api-loop:wsA:") for h in holders)
-def test_docking_box_guard_refuses_oversized_blind_box(tmp_path):
-    """A whole-protein blind box (edge > MAX_BOX_EDGE) must be refused with
-    explicit provenance BEFORE any Vina map allocation — this is the guard
-    against the ~40 GiB RSS runaway that forced the API to be killed.
 
-    * oversized blind box (size 80 A -> edge 84 A > 40 A) -> ValueError
-    * normal pocket-targeted box (size 18 A -> edge 22 A < 40 A) -> must NOT
-      trip the guard (it proceeds to receptor prep, which fails for a fake CIF
-      with a different, expected error)
-    """
-    from drugdiscovery.sim.engine import DockingEngine, MAX_BOX_EDGE
-    assert MAX_BOX_EDGE == 40.0
+
+@pytest.fixture
+def mocked_docking_tools(monkeypatch):
+    import drugdiscovery.sim.engine as engine
+
+    prepare_receptor = Mock(side_effect=lambda cif, raw: raw.write_text("receptor raw\n"))
+    prepare_ligand = Mock(
+        side_effect=lambda smiles, path, seed: path.write_text("ligand pdbqt\n"))
+
+    def prepare_receptor_pdbqt(args, **kwargs):
+        Path(args[args.index("-o") + 1] + ".pdbqt").write_text("receptor pdbqt\n")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    run = Mock(side_effect=prepare_receptor_pdbqt)
+    vina_module = ModuleType("vina")
+    vina_module.Vina = Mock()
+    vina_module.Vina.return_value.score.return_value = [-7.5]
+    vina_module.Vina.return_value.write_poses.side_effect = (
+        lambda path, **kwargs: Path(path).write_text("docked pose\n"))
+    monkeypatch.setattr(engine, "prepare_receptor", prepare_receptor)
+    monkeypatch.setattr(engine, "prepare_ligand", prepare_ligand)
+    monkeypatch.setattr(engine, "subprocess", SimpleNamespace(run=run))
+    monkeypatch.setitem(sys.modules, "vina", vina_module)
+    return SimpleNamespace(prepare_receptor=prepare_receptor, prepare_ligand=prepare_ligand,
+                           run=run, Vina=vina_module.Vina)
+
+
+@pytest.mark.parametrize("source", ["blind", "explicit"])
+@pytest.mark.parametrize("size", [80.0, 38.0], ids=["oversized", "padding-overflow"])
+def test_docking_box_guard_refuses_oversized_box(tmp_path, mocked_docking_tools, source, size):
+    """Reject final edges above the limit before any prep or map allocation."""
+    from drugdiscovery.sim.engine import DockingEngine
+
     eng = DockingEngine(bin_dir=str(tmp_path / "bin"), cpu=2, seed=0)
-    fake_cif = str(tmp_path / "fake.cif")
+    pocket = {"center": [0.0, 0.0, 0.0], "size": size, "source": source}
+    with pytest.raises(ValueError):
+        eng.dock(cif_path=str(tmp_path / "fake.cif"), pocket=pocket, smiles="CCO",
+                 work_dir=str(tmp_path / "work"), box_padding=4.0)
 
-    # 1. oversized blind box -> refused with the box-guard error
-    big = {"center": [0.0, 0.0, 0.0], "size": 80.0, "source": "blind"}
-    with pytest.raises(ValueError, match="exceeds the"):
-        eng.dock(cif_path=fake_cif, pocket=big, smiles="CCO",
-                 work_dir=str(tmp_path / "work_big"))
+    mocked_docking_tools.prepare_receptor.assert_not_called()
+    mocked_docking_tools.prepare_ligand.assert_not_called()
+    mocked_docking_tools.run.assert_not_called()
+    mocked_docking_tools.Vina.assert_not_called()
+    mocked_docking_tools.Vina.return_value.compute_vina_maps.assert_not_called()
 
-    # 2. normal pocket-targeted box -> must NOT trip the box guard
-    ok = {"center": [0.0, 0.0, 0.0], "size": 18.0, "source": "ligand"}
-    try:
-        eng.dock(cif_path=fake_cif, pocket=ok, smiles="CCO",
-                 work_dir=str(tmp_path / "work_ok"))
-    except ValueError as e:
-        assert "exceeds the" not in str(e), "normal box must not trip the guard"
-    except Exception:
-        pass  # receptor/ligand prep failure is expected for a fake CIF
+
+def test_docking_small_targeted_box_completes(tmp_path, mocked_docking_tools):
+    """A safe pocket reaches map computation with its requested geometry."""
+    from drugdiscovery.sim.engine import DockingEngine
+
+    eng = DockingEngine(bin_dir=str(tmp_path / "bin"), cpu=2, seed=0)
+    center = [1.5, -2.0, 3.25]
+    pocket = {"center": center, "size": 18.0, "source": "ligand"}
+    eng.dock(cif_path=str(tmp_path / "fake.cif"), pocket=pocket, smiles="CCO",
+             work_dir=str(tmp_path / "work"), box_padding=6.0)
+
+    mocked_docking_tools.Vina.return_value.compute_vina_maps.assert_called_once_with(
+        center=center, box_size=[24.0, 24.0, 24.0])
+
+
+# ---------------------------------------------------------------------------
+# Planner: oversized blind-docking skip (box guard, planner side)
+# ---------------------------------------------------------------------------
+def _mk_blind_structure(s, ws, file_path, ligands=None, st_id="st_blind"):
+    """Target (structural acquired) + compound + BLIND structure (no co-crystal ligand)."""
+    tgt, _ = repos.upsert_node(s, ws.id, "enzyme", "CKAP4", confidence=0.8,
+                               properties={"structural": {"acquired": True}})
+    st = Structure(id=st_id, workspace_id=ws.id, source="pdb", source_id="BLND1",
+                   protein_node_id=tgt.id, method="x-ray", resolution=2.5,
+                   file_path=file_path, ligands=ligands)
+    s.add(st)
+    s.flush()
+    # compound in the global catalogue (planner's compounds source) + a compound node
+    comp, _ = repos.upsert_compound(s, name="TestLig", canonical_smiles="CCO")
+    comp_node, _ = repos.upsert_node(s, ws.id, "compound", "TestLig", confidence=0.7,
+                                     properties={"canonical_smiles": "CCO"})
+    # edge compound node -> target node so the planner sees a dockable pair
+    repos.add_edge(s, ws.id, "binds_to", comp_node, tgt)
+    s.commit()
+    return ws, st
+
+
+def test_planner_skips_oversized_blind_docking(tmp_path, monkeypatch):
+    import drugdiscovery.sim as sim_mod
+    monkeypatch.setattr(sim_mod, "pocket_blind",
+                        lambda path, margin=5.0: {"center": [0, 0, 0], "size": 100.0,
+                                                  "comp_id": None, "source": "blind"})
+    with get_session() as s:
+        ws = _mk_ws(s)
+        pdb = tmp_path / "blind.pdb"
+        pdb.write_text("ATOM      1  N   ALA A   1      11.004  13.524  10.204  1.00  0.00           N\n")
+        _mk_blind_structure(s, ws, str(pdb), ligands=[])
+        planner.ensure_pipeline(s, ws)
+        s.commit()
+        docks = s.execute(select(Experiment).where(
+            Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalars().all()
+        assert not docks, "oversized blind structure must not be queued for docking"
+        skipped = (ws.state_json or {}).get("docking_skipped", {})
+        assert "st_blind" in skipped, "skip reason must be persisted as provenance"
+        assert skipped["st_blind"]["edge_A"] > 40.0
+
+
+def test_planner_treats_malformed_ligands_as_blind(tmp_path, monkeypatch):
+    """Malformed truthy ligand metadata ([None]) must not bypass the blind guard."""
+    import drugdiscovery.sim as sim_mod
+    monkeypatch.setattr(sim_mod, "pocket_blind",
+                        lambda path, margin=5.0: {"center": [0, 0, 0], "size": 100.0,
+                                                  "comp_id": None, "source": "blind"})
+    with get_session() as s:
+        ws = _mk_ws(s)
+        pdb = tmp_path / "blind.pdb"
+        pdb.write_text("ATOM      1  N   ALA A   1      11.004  13.524  10.204  1.00  0.00           N\n")
+        _mk_blind_structure(s, ws, str(pdb), ligands=[None])  # truthy but invalid
+        planner.ensure_pipeline(s, ws)
+        s.commit()
+        docks = s.execute(select(Experiment).where(
+            Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalars().all()
+        assert not docks, "malformed ligands must be treated as blind (guarded)"
+        assert "st_blind" in (ws.state_json or {}).get("docking_skipped", {})
+
+
+def test_planner_labels_small_malformed_ligand_structure_as_blind(tmp_path, monkeypatch):
+    import drugdiscovery.sim as sim_mod
+
+    monkeypatch.setattr(sim_mod, "pocket_blind",
+                        lambda path, margin=5.0: {"center": [0, 0, 0], "size": 20.0,
+                                                  "comp_id": None, "source": "blind"})
+    with get_session() as s:
+        ws = _mk_ws(s)
+        pdb = tmp_path / "blind.pdb"
+        pdb.write_text("ATOM      1  N   ALA A   1      11.004  13.524  10.204  1.00  0.00           N\n")
+        _mk_blind_structure(s, ws, str(pdb), ligands=[None])
+        planner.ensure_pipeline(s, ws)
+        s.commit()
+        s.refresh(ws)
+        docking = s.execute(select(Experiment).where(
+            Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalar_one()
+        assert docking.status == JobStatus.QUEUED.value
+        assert "blind" in docking.reason.lower()
+        assert "st_blind" not in (ws.state_json or {}).get("docking_skipped", {})
+
+
+def test_planner_fails_closed_on_pocket_blind_error(tmp_path, monkeypatch):
+    """A pocket_blind error must persist skip provenance (fail closed), not queue."""
+    import drugdiscovery.sim as sim_mod
+    def _boom(path, margin=5.0):
+        raise ValueError("no polymer atoms found")
+    monkeypatch.setattr(sim_mod, "pocket_blind", _boom)
+    with get_session() as s:
+        ws = _mk_ws(s)
+        pdb = tmp_path / "blind.pdb"
+        pdb.write_text("ATOM      1  N   ALA A   1      11.004  13.524  10.204  1.00  0.00           N\n")
+        _mk_blind_structure(s, ws, str(pdb), ligands=[])
+        planner.ensure_pipeline(s, ws)
+        s.commit()
+        s.refresh(ws)
+        docks = s.execute(select(Experiment).where(
+            Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalars().all()
+        assert not docks, "fail-closed: must not queue when box could not be verified"
+        skipped = (ws.state_json or {}).get("docking_skipped", {})
+        assert "st_blind" in skipped, "fail-closed skip provenance must be persisted"
+        assert skipped["st_blind"]["error"] == "no polymer atoms found"
+
+
+@pytest.mark.parametrize("file_path", ["", "missing.pdb"], ids=["missing-path", "missing-file"])
+def test_planner_fails_closed_on_missing_blind_structure(tmp_path, monkeypatch, file_path):
+    import drugdiscovery.sim as sim_mod
+
+    monkeypatch.setattr(sim_mod, "pocket_blind",
+                        lambda path, margin=5.0: {"center": [0, 0, 0], "size": 18.0,
+                                                  "comp_id": None, "source": "blind"})
+    with get_session() as s:
+        ws = _mk_ws(s)
+        path = str(tmp_path / file_path) if file_path else ""
+        _mk_blind_structure(s, ws, path, ligands=[])
+        planner.ensure_pipeline(s, ws)
+        s.commit()
+        s.refresh(ws)
+        docks = s.execute(select(Experiment).where(
+            Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalars().all()
+        assert not docks, "unverifiable blind structure must not be queued for docking"
+        skipped = (ws.state_json or {}).get("docking_skipped", {})
+        assert "st_blind" in skipped
+        assert skipped["st_blind"]["reason"]
