@@ -534,10 +534,10 @@ def test_docking_small_targeted_box_completes(tmp_path, mocked_docking_tools):
 
 
 # ---------------------------------------------------------------------------
-# Planner: oversized blind-docking skip (box guard, planner side)
+# Planner: docking box admission before scheduling compounds
 # ---------------------------------------------------------------------------
-def _mk_blind_structure(s, ws, file_path, ligands=None, st_id="st_blind"):
-    """Target (structural acquired) + compound + BLIND structure (no co-crystal ligand)."""
+def _mk_docking_structure(s, ws, file_path, ligands=None, st_id="st_blind"):
+    """Acquired target + related compound + candidate docking structure."""
     tgt, _ = repos.upsert_node(s, ws.id, "enzyme", "CKAP4", confidence=0.8,
                                properties={"structural": {"acquired": True}})
     st = Structure(id=st_id, workspace_id=ws.id, source="pdb", source_id="BLND1",
@@ -564,7 +564,7 @@ def test_planner_skips_oversized_blind_docking(tmp_path, monkeypatch):
         ws = _mk_ws(s)
         pdb = tmp_path / "blind.pdb"
         pdb.write_text("ATOM      1  N   ALA A   1      11.004  13.524  10.204  1.00  0.00           N\n")
-        _mk_blind_structure(s, ws, str(pdb), ligands=[])
+        _mk_docking_structure(s, ws, str(pdb), ligands=[])
         planner.ensure_pipeline(s, ws)
         s.commit()
         docks = s.execute(select(Experiment).where(
@@ -585,7 +585,7 @@ def test_planner_treats_malformed_ligands_as_blind(tmp_path, monkeypatch):
         ws = _mk_ws(s)
         pdb = tmp_path / "blind.pdb"
         pdb.write_text("ATOM      1  N   ALA A   1      11.004  13.524  10.204  1.00  0.00           N\n")
-        _mk_blind_structure(s, ws, str(pdb), ligands=[None])  # truthy but invalid
+        _mk_docking_structure(s, ws, str(pdb), ligands=[None])  # truthy but invalid
         planner.ensure_pipeline(s, ws)
         s.commit()
         docks = s.execute(select(Experiment).where(
@@ -604,7 +604,7 @@ def test_planner_labels_small_malformed_ligand_structure_as_blind(tmp_path, monk
         ws = _mk_ws(s)
         pdb = tmp_path / "blind.pdb"
         pdb.write_text("ATOM      1  N   ALA A   1      11.004  13.524  10.204  1.00  0.00           N\n")
-        _mk_blind_structure(s, ws, str(pdb), ligands=[None])
+        _mk_docking_structure(s, ws, str(pdb), ligands=[None])
         planner.ensure_pipeline(s, ws)
         s.commit()
         s.refresh(ws)
@@ -625,7 +625,7 @@ def test_planner_fails_closed_on_pocket_blind_error(tmp_path, monkeypatch):
         ws = _mk_ws(s)
         pdb = tmp_path / "blind.pdb"
         pdb.write_text("ATOM      1  N   ALA A   1      11.004  13.524  10.204  1.00  0.00           N\n")
-        _mk_blind_structure(s, ws, str(pdb), ligands=[])
+        _mk_docking_structure(s, ws, str(pdb), ligands=[])
         planner.ensure_pipeline(s, ws)
         s.commit()
         s.refresh(ws)
@@ -637,23 +637,121 @@ def test_planner_fails_closed_on_pocket_blind_error(tmp_path, monkeypatch):
         assert skipped["st_blind"]["error"] == "no polymer atoms found"
 
 
-@pytest.mark.parametrize("file_path", ["", "missing.pdb"], ids=["missing-path", "missing-file"])
-def test_planner_fails_closed_on_missing_blind_structure(tmp_path, monkeypatch, file_path):
+def test_planner_skips_targeted_padding_overflow_before_compound_fanout(tmp_path, monkeypatch):
+    from rdkit import Chem
+
     import drugdiscovery.sim as sim_mod
 
-    monkeypatch.setattr(sim_mod, "pocket_blind",
-                        lambda path, margin=5.0: {"center": [0, 0, 0], "size": 18.0,
-                                                  "comp_id": None, "source": "blind"})
+    def pocket(path, comp_id):
+        # A later, smaller site must not replace the runner's first usable ligand.
+        return {"center": [0, 0, 0], "size": 38.0 if comp_id == "LIG" else 18.0,
+                "comp_id": comp_id}
+
+    monkeypatch.setattr(sim_mod, "pocket_from_ligand", pocket)
     with get_session() as s:
         ws = _mk_ws(s)
-        path = str(tmp_path / file_path) if file_path else ""
-        _mk_blind_structure(s, ws, path, ligands=[])
+        pdb = tmp_path / "targeted.pdb"
+        pdb.touch()
+        _mk_docking_structure(s, ws, str(pdb), st_id="st_targeted",
+                              ligands=[None, {}, {"comp_id": ""}, {"comp_id": "LIG"},
+                                       {"comp_id": "OTHER"}])
+        repos.upsert_compound(s, name="OtherLig", canonical_smiles="CCN",
+                              inchikey=Chem.MolToInchiKey(Chem.MolFromSmiles("CCN")))
         planner.ensure_pipeline(s, ws)
         s.commit()
         s.refresh(ws)
         docks = s.execute(select(Experiment).where(
             Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalars().all()
-        assert not docks, "unverifiable blind structure must not be queued for docking"
+        assert not docks
+        skipped = ws.state_json["docking_skipped"]["st_targeted"]
+        assert skipped["source"] == "ligand"
+        assert skipped["edge_A"] == 42.0
+        assert skipped["max_edge_A"] == 40.0
+
+
+def test_planner_fails_closed_on_targeted_geometry_error(tmp_path, monkeypatch):
+    import drugdiscovery.sim as sim_mod
+
+    error = ValueError("ligand coordinates unavailable")
+
+    def pocket(path, comp_id):
+        raise error
+
+    monkeypatch.setattr(sim_mod, "pocket_from_ligand", pocket)
+    # A targeted geometry failure must not fall back to a different, blind site.
+    monkeypatch.setattr(sim_mod, "pocket_blind",
+                        lambda path: {"center": [0, 0, 0], "size": 18.0, "source": "blind"})
+    with get_session() as s:
+        ws = _mk_ws(s)
+        pdb = tmp_path / "targeted.pdb"
+        pdb.touch()
+        _mk_docking_structure(s, ws, str(pdb), st_id="st_targeted",
+                              ligands=[{"comp_id": "LIG"}])
+        planner.ensure_pipeline(s, ws)
+        s.commit()
+        s.refresh(ws)
+        docks = s.execute(select(Experiment).where(
+            Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalars().all()
+        assert not docks
+        skipped = ws.state_json["docking_skipped"]["st_targeted"]
+        assert skipped["source"] == "ligand"
+        assert skipped["error"] == str(error)
+
+
+def test_planner_admits_targeted_final_box_at_limit(tmp_path, monkeypatch):
+    from rdkit import Chem
+
+    import drugdiscovery.sim as sim_mod
+
+    # A second geometry computation would fail closed for the second compound.
+    pocket = Mock(side_effect=[
+        {"center": [1.5, -2.0, 3.25], "size": 36.0, "comp_id": "LIG"},
+        ValueError("geometry should be computed once per candidate structure"),
+    ])
+    monkeypatch.setattr(sim_mod, "pocket_from_ligand", pocket)
+    with get_session() as s:
+        ws = _mk_ws(s)
+        pdb = tmp_path / "targeted.pdb"
+        pdb.touch()
+        _mk_docking_structure(s, ws, str(pdb), st_id="st_targeted",
+                              ligands=[{"comp_id": "LIG"}])
+        other, _ = repos.upsert_compound(
+            s, name="OtherLig", canonical_smiles="CCN",
+            inchikey=Chem.MolToInchiKey(Chem.MolFromSmiles("CCN")))
+        planner.ensure_pipeline(s, ws)
+        s.commit()
+        s.refresh(ws)
+        docks = s.execute(select(Experiment).where(
+            Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalars().all()
+        assert {d.params_json["compound_smiles"] for d in docks} == {"CCO", other.canonical_smiles}
+        for docking in docks:
+            assert docking.status == JobStatus.QUEUED.value
+            assert "ligand" in docking.reason.lower()
+            assert "blind" not in docking.reason.lower()
+        assert "st_targeted" not in (ws.state_json or {}).get("docking_skipped", {})
+
+
+@pytest.mark.parametrize("ligands", [[], [{"comp_id": "LIG"}]], ids=["blind", "targeted"])
+@pytest.mark.parametrize("file_path", ["", "missing.pdb"], ids=["missing-path", "missing-file"])
+def test_planner_fails_closed_on_missing_structure(tmp_path, monkeypatch, file_path, ligands):
+    import drugdiscovery.sim as sim_mod
+
+    monkeypatch.setattr(sim_mod, "pocket_blind",
+                        lambda path, margin=5.0: {"center": [0, 0, 0], "size": 18.0,
+                                                  "comp_id": None, "source": "blind"})
+    monkeypatch.setattr(sim_mod, "pocket_from_ligand",
+                        lambda path, comp_id: {"center": [0, 0, 0], "size": 18.0,
+                                              "comp_id": comp_id})
+    with get_session() as s:
+        ws = _mk_ws(s)
+        path = str(tmp_path / file_path) if file_path else ""
+        _mk_docking_structure(s, ws, path, ligands=ligands)
+        planner.ensure_pipeline(s, ws)
+        s.commit()
+        s.refresh(ws)
+        docks = s.execute(select(Experiment).where(
+            Experiment.workspace_id == ws.id, Experiment.kind == "docking")).scalars().all()
+        assert not docks, "unverifiable structure must not be queued for docking"
         skipped = (ws.state_json or {}).get("docking_skipped", {})
         assert "st_blind" in skipped
         assert skipped["st_blind"]["reason"]
