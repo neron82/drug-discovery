@@ -42,7 +42,7 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
         records = provider.search(params.get("query", ""), int(params.get("size", 10)))
         new = 0
         for rec in records:
-            _, created = repos.upsert_paper(session, ws.id, rec)
+            paper, created = repos.upsert_paper(session, ws.id, rec)
             if created:
                 new += 1
                 # queue extraction for the fresh paper so flow continues
@@ -52,7 +52,7 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
                     reason="Ingested paper needs structured extraction",
                     expected_information_gain=0.7, scientific_importance=0.6,
                     confidence_impact=0.4, computational_cost=1.2,
-                    priority=0.5, params={"paper_id": rec.pmid and _paper_id_by_pmid(session, ws.id, rec.pmid)},
+                    priority=0.5, params={"paper_id": paper.id},
                     worker="biologist")
         repos.add_timeline(session, ws.id, "researcher", "info",
                            f"Literature search '{params.get('query')}': {new} new of {len(records)} papers ingested",
@@ -81,7 +81,7 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
         records = provider.search(q, int(params.get("size", 8)))
         new = 0
         for rec in records:
-            _, created = repos.upsert_paper(session, ws.id, rec)
+            paper, created = repos.upsert_paper(session, ws.id, rec)
             new += int(created)
             if created and rec.abstract:
                 repos.create_experiment(session, ws.id, "paper_extraction",
@@ -89,7 +89,7 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
                                         reason="Skeptic ingestion", expected_information_gain=0.7,
                                         scientific_importance=0.6, confidence_impact=0.6,
                                         computational_cost=1.2, priority=0.6,
-                                        params={"paper_id": _paper_id_by_pmid(session, ws.id, rec.pmid)},
+                                        params={"paper_id": paper.id},
                                         worker="skeptic")
         repos.add_timeline(session, ws.id, "skeptic", "warn" if new else "info",
                            f"Skeptic search for negative evidence: {new} new papers", {})
@@ -224,13 +224,6 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
         return (summary, {"results": res})
 
     return f"Unhandled experiment kind: {kind}", {}
-
-
-def _paper_id_by_pmid(session, ws_id, pmid):
-    if not pmid:
-        return None
-    p = session.execute(select(Paper).where(Paper.workspace_id == ws_id, Paper.pmid == str(pmid))).scalar_one_or_none()
-    return p.id if p else None
 
 
 def derive_open_questions(session, ws) -> list[str]:

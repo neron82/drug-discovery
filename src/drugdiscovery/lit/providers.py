@@ -129,25 +129,32 @@ def _parse_pubmed_xml(xml: str) -> list[PaperRecord]:
     out = []
     root = ET.fromstring(xml)
     for art in root.iter("PubmedArticle"):
-        pmid = (art.findtext(".//PMID") or "").strip()
-        title = (art.findtext(".//ArticleTitle") or "").strip()
+        article = art.find("MedlineCitation/Article")
+        if article is None:
+            continue
+        pmid = (art.findtext("MedlineCitation/PMID") or "").strip()
+        title_element = article.find("ArticleTitle")
+        title = "".join(title_element.itertext()).strip() if title_element is not None else ""
         if not title:
             continue
-        abstract = " ".join(t.strip() for t in art.findall(".//AbstractText") if t.text)
+        sections = []
+        for section in article.findall("Abstract/AbstractText"):
+            text = "".join(section.itertext()).strip()
+            if not text:
+                continue
+            label = (section.get("Label") or "").strip()
+            sections.append(f"{label}: {text}" if label else text)
+        abstract = "\n\n".join(sections)
         authors = [f"{a.findtext('LastName','')} {a.findtext('Initials','')}".strip()
-                   for a in art.findall(".//AuthorList/Author")][:20]
-        journal = (art.findtext(".//Journal/Title") or "").strip()
-        year_s = art.findtext(".//JournalIssue/PubDate/Year") or art.findtext(".//JournalIssue/PubDate/MedlineDate")
+                   for a in article.findall("AuthorList/Author")][:20]
+        journal = (article.findtext("Journal/Title") or "").strip()
+        year_s = article.findtext("Journal/JournalIssue/PubDate/Year") or article.findtext("Journal/JournalIssue/PubDate/MedlineDate")
         year = None
         try:
             year = int(year_s[:4]) if year_s else None
         except Exception:
             year = None
-        doi = (art.findtext(".//ArticleIdList/ArticleId[@IdType='doi']") or "").strip()
-        if not doi:
-            for aid in art.findall(".//ArticleIdList/ArticleId"):
-                if aid.get("IdType") == "doi":
-                    doi = (aid.text or "").strip()
+        doi = (art.findtext("PubmedData/ArticleIdList/ArticleId[@IdType='doi']") or "").strip()
         out.append(PaperRecord(pmid=pmid, doi=doi, title=title, abstract=abstract, authors=authors,
                                journal=journal, year=year, source="pubmed",
                                url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"))
