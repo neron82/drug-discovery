@@ -234,10 +234,11 @@ async function openCompoundCard(cid){
       <h3>Simulation history (${sims.length}) — predictions, not activity claims</h3>
       <table><thead><tr><th>Kind</th><th>Structure</th><th>Score</th><th>Status</th><th>Software/seed</th><th>Assumptions</th></tr></thead><tbody>${dockRows||'<tr><td colspan=6 class="muted">none yet</td></tr>'}</tbody></table>
       <h3>Similar compounds (${sim.filter(x=>x.id!==cid).length})</h3>
-      <div class="cards">${sim.filter(x=>x.id!==cid).slice(0,8).map(x=>`<div class="card mini" onclick="openCompoundCard('${x.id}')">
-        <img class="struct sm" src="/api/compounds/${x.id}/svg" loading="lazy"/>
+      <div class="cards">${sim.filter(x=>x.id!==cid).slice(0,8).map(x=>`<div class="card mini" data-cid="${esc(x.id)}" style="cursor:pointer">
+        <img class="struct sm" src="/api/compounds/${x.id}/svg" loading="lazy" alt=""/>
         <div class="small"><b>${esc(x.name)}</b><br>Tanimoto ${x.similarity}</div></div>`).join("")||"<div class='muted small'>none ≥0.3</div>"}</div>`;
     body.innerHTML=html;
+    $$("#cmp-body .card.mini").forEach(el=> el.onclick = ()=> openCompoundCard(el.dataset.cid));
   }catch(err){ body.innerHTML="<div class='muted'>card error: "+esc(String(err.message||err))+"</div>"; }
 }
 function badgeCls2(s){ return badge(s==="done"?"established":(s==="failed"?"computational":"speculative")); }
@@ -262,7 +263,6 @@ function bindView(view){
   const cc = $("#cmp-close"); if (cc) cc.onclick = ()=> $("#cmp-modal").hidden = true;
   const cv = $("#cmp-vs-close"); if (cv) cv.onclick = ()=> $("#cmp-vs").hidden = true;
   const cb = $("#btn-cmp"); if (cb) cb.onclick = cmpVs;
-  $$(".compound-card h4").forEach(h=> h.style.cursor="pointer", 0);
   $$(".compound-card h4").forEach(h=> h.onclick = ()=>{ const inp=h.closest(".compound-card").querySelector("input[data-cid]"); if(inp) openCompoundCard(inp.dataset.cid); });
   if (view==="compounds") bindCompound();
   if (view==="structures") bindStructures();
@@ -312,6 +312,7 @@ async function renderCompounds(){
   const wired = wsC.filter(x=>x.compound);
   const cards = wired.map(x=>{
     const c=x.compound;
+    cmpSel.delete(c.id);   // re-render drops unchecked boxes; drop stale ids
     return `<div class="card compound-card">
       <img class="struct" src="/api/compounds/${c.id}/svg" alt="${esc(c.name)}" loading="lazy"
            onerror="this.style.display='none'"/>
@@ -696,21 +697,15 @@ async function refreshActivity(){
 }
 
 /* ---------------- boot ---------------- */
-async function refresh(){
-  await refreshResearchState();
-  await render();
-  refreshActivity();
-}
-
 (async function boot(){
   try {
     const s = await api("/status");
     $("#llm-label").textContent = (s.llm&&s.llm.model)||"llm …";
     $("#llm-dot").className = "dot " + ((s.llm&&(s.llm.error===undefined))?"ok":"bad");
   } catch(e){ $("#llm-dot").className="dot bad"; $("#llm-label").textContent="offline"; }
-  $("#nav").querySelectorAll("a").forEach(a=> a.onclick = async ()=>{
-    $$("#nav a").forEach(x=>x.classList.remove("active")); a.classList.add("active");
-    state.view = a.dataset.view; await render();
+  $("#nav").querySelectorAll("a").forEach(a=> {
+    a.onclick = async ()=>{ $$("#nav a").forEach(x=>x.classList.remove("active")); a.classList.add("active"); state.view = a.dataset.view; await render(); };
+    a.onkeydown = e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); a.click(); } };
   });
   bindResearch();
   await refreshWorkspaces();
