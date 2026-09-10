@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -43,6 +44,11 @@ def _hash(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
 
+def normalize_pmcid(value) -> str:
+    value = str(value or "").strip().upper()
+    return value if re.fullmatch(r"PMC[1-9][0-9]*", value) else ""
+
+
 class SearchProvider(Protocol):
     name: str
 
@@ -76,21 +82,23 @@ class EuropePMCProvider:
                 year = int(year) if year else None
             except Exception:
                 year = None
-            doi = h.get("doi", "")
-            pmid = h.get("pmid", "")
-            url = f"https://europepmc.org/article/MED/{pmid}" if pmid else ""
+            doi = h.get("doi") or ""
+            pmid = h.get("pmid") or (h.get("id") if h.get("source") == "MED" else "") or ""
+            pmcid = normalize_pmcid(h.get("pmcid") or (h.get("id") if h.get("source") == "PMC" else ""))
+            url = (f"https://europepmc.org/article/MED/{pmid}" if pmid else
+                   f"https://europepmc.org/article/PMC/{pmcid}" if pmcid else "")
             out.append(PaperRecord(
                 pmid=str(pmid), doi=doi, title=h["title"],
-                abstract=h.get("abstractText", ""), authors=authors,
+                abstract=h.get("abstractText") or "", authors=authors,
                 journal=jtitle, year=year, source="europepmc", url=url,
-                extra={"id": h.get("id"), "source_attribution": h.get("source")},
+                extra={"id": h.get("id"), "source_attribution": h.get("source"), "pmcid": pmcid},
             ))
         return out
 
 
 def _emc_query(q: str) -> str:
-    """Boost: prefer papers with abstracts, across a sensible time window."""
-    return f"({q}) AND (HAS_ABSTRACT:Y)"
+    """Include abstracts and open-access articles, including full-text-only records."""
+    return f"({q}) AND (HAS_ABSTRACT:Y OR OPEN_ACCESS:Y)"
 
 
 class PubMedProvider:
@@ -155,9 +163,10 @@ def _parse_pubmed_xml(xml: str) -> list[PaperRecord]:
         except Exception:
             year = None
         doi = (art.findtext("PubmedData/ArticleIdList/ArticleId[@IdType='doi']") or "").strip()
+        pmcid = normalize_pmcid(art.findtext("PubmedData/ArticleIdList/ArticleId[@IdType='pmc']"))
         out.append(PaperRecord(pmid=pmid, doi=doi, title=title, abstract=abstract, authors=authors,
                                journal=journal, year=year, source="pubmed",
-                               url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"))
+                               url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/", extra={"pmcid": pmcid}))
     return out
 
 

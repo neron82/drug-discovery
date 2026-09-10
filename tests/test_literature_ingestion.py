@@ -42,12 +42,16 @@ def test_doi_only_ingestion_queues_persisted_papers_without_duplicates(monkeypat
             "",
         ])
     ]
+    records.append(PaperRecord(
+        pmid="", doi="", title="Synthetic PMC-only ingestion fixture",
+        abstract="", authors=[], journal="", year=None, source="synthetic-test",
+        url="", extra={"pmcid": "PMC123456"},
+    ))
     provider = SimpleNamespace(search=lambda query, size: records)
     monkeypatch.setattr(research, "get_provider", lambda name: provider)
     expected_records = {
         (record.doi, record.title, record.abstract)
         for record in records
-        if kind == "literature_search" or record.abstract
     }
 
     with db.get_session() as session:

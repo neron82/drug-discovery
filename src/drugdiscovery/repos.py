@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import bindparam, column
 
 from .models import (
-    Compound, Edge, Experiment, Hypothesis, JobStatus, KnowledgeType, Node, Paper, Statement,
+    Compound, Edge, Experiment, Hypothesis, JobStatus, KnowledgeType, Node, Paper, PaperSource, Statement,
     TimelineEntry, Workspace,
 )
 
@@ -142,6 +142,9 @@ def add_edge(session: Session, ws_id: str, edge_type: str, source: Node, target:
 # Papers
 # ---------------------------------------------------------------------------
 def upsert_paper(session: Session, ws_id: str, rec) -> tuple[Paper, bool]:
+    from .lit.providers import normalize_pmcid
+    from .lit.sources import retain_abstract
+
     # dedup by content hash (robust to missing pmid/doi)
     existing = session.execute(select(Paper).where(
         Paper.workspace_id == ws_id, Paper.content_hash == rec.content_hash)).scalar_one_or_none()
@@ -149,17 +152,22 @@ def upsert_paper(session: Session, ws_id: str, rec) -> tuple[Paper, bool]:
         existing = session.execute(select(Paper).where(Paper.workspace_id == ws_id, Paper.pmid == rec.pmid)).scalar_one_or_none()
     if existing is None and rec.doi:
         existing = session.execute(select(Paper).where(Paper.workspace_id == ws_id, Paper.doi == rec.doi)).scalar_one_or_none()
+    if existing is None and (pmcid := normalize_pmcid((getattr(rec, "extra", None) or {}).get("pmcid"))):
+        existing = session.execute(select(Paper).join(PaperSource).where(
+            Paper.workspace_id == ws_id, PaperSource.pmcid == pmcid,
+        )).scalars().unique().one_or_none()
     if existing:
         if not existing.abstract and rec.abstract:
             existing.abstract = rec.abstract
             existing.content_hash = rec.content_hash
-            existing.status = "fetched"
+        retain_abstract(session, existing, getattr(rec, "extra", None))
         return existing, False
     paper = Paper(workspace_id=ws_id, pmid=rec.pmid or None, doi=rec.doi or None, title=rec.title,
                   abstract=rec.abstract, authors_json=rec.authors, journal=rec.journal, year=rec.year,
                   source=rec.source, url=rec.url, content_hash=rec.content_hash)
     session.add(paper)
     session.flush()
+    retain_abstract(session, paper, getattr(rec, "extra", None))
     return paper, True
 
 

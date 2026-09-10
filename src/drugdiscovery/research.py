@@ -83,7 +83,7 @@ def execute_experiment(session, ws, ex, llm: LLMProvider):
         for rec in records:
             paper, created = repos.upsert_paper(session, ws.id, rec)
             new += int(created)
-            if created and rec.abstract:
+            if created:
                 repos.create_experiment(session, ws.id, "paper_extraction",
                                         question=f"Extract claims: {rec.title[:60]}…",
                                         reason="Skeptic ingestion", expected_information_gain=0.7,

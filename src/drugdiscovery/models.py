@@ -247,6 +247,31 @@ class Paper(Base):
 
     workspace = relationship("Workspace", back_populates="papers")
     statements = relationship("Statement", back_populates="paper", cascade="all, delete-orphan")
+    sources = relationship("PaperSource", back_populates="paper", cascade="all, delete-orphan")
+
+
+class PaperSource(Base):
+    """Retained source snapshots; artifact hashes identify immutable original and derived bytes."""
+    __tablename__ = "paper_sources"
+    __table_args__ = (
+        UniqueConstraint("paper_id", "kind", "text_sha256", name="uq_paper_source_text"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(24))
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    pmcid: Mapped[str] = mapped_column(String(32), default="")
+    raw_path: Mapped[str] = mapped_column(Text)
+    raw_sha256: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(80))
+    text_path: Mapped[str] = mapped_column(Text)
+    text_sha256: Mapped[str] = mapped_column(String(64))
+    text_chars: Mapped[int] = mapped_column(Integer)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    paper = relationship("Paper", back_populates="sources")
 
 
 class Statement(Base):

@@ -142,7 +142,7 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
             continue
         _create(
             ws_id, "paper_extraction", question=f"Extract claims: {p.title[:60]}…",
-            reason="Convert raw abstract into structured KG claims",
+            reason="Convert available source text into grounded, source-labelled KG claims",
             expected_information_gain=0.7, scientific_importance=0.6, confidence_impact=0.4,
             computational_cost=1.2, priority=compute_priority(weights, 0.7, 0.6, 0.4, 1.2),
             params={"paper_id": p.id}, worker="biologist")

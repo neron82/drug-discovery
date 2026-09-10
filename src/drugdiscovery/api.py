@@ -5,7 +5,7 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
@@ -17,6 +17,7 @@ from .config import settings
 from .db import get_session, session_scope, init_db
 from .llm import LLMProvider
 from .lit.providers import get_provider
+from .lit.sources import acquire_full_text, source_summary, verified_source_path
 from .models import JobStatus, KnowledgeType
 from . import __version__
 
@@ -141,13 +142,22 @@ def _stmt_d(s):
             "endpoint": s.properties.get("endpoint", ""),
             "support_citations": s.support_citations[:5],
             "contradict_citations": s.contradict_citations[:5],
-            "paper_id": s.source_paper_id, "extractor_model": s.extractor_model}
+            "paper_id": s.source_paper_id, "extractor_model": s.extractor_model,
+            "extraction_source": s.properties.get("extraction_source") or {
+                "kind": "abstract", "legacy": True, "truncated": None}}
+
+
+def _source_d(source):
+    base = f"/api/papers/{source.paper_id}/sources/{source.id}"
+    return {**source_summary(source), "text_url": f"{base}?format=text",
+            "raw_url": f"{base}?format=raw"}
 
 
 def _paper_d(p):
     return {"id": p.id, "pmid": p.pmid, "doi": p.doi, "title": p.title, "journal": p.journal,
             "year": p.year, "source": p.source, "url": p.url, "status": p.status,
-            "authors": p.authors_json[:8], "n_claims": len(p.statements)}
+            "authors": p.authors_json[:8], "n_claims": len(p.statements),
+            "sources": [_source_d(source) for source in p.sources]}
 
 
 # --- app --------------------------------------------------------------------
@@ -345,11 +355,7 @@ def node_card(node_id: str):
                        "evidence_level": e.evidence_level,
                        "confidence": round(e.confidence, 3),
                        "provenance": e.provenance or []} for e in edges],
-            "statements": [{"id": st.id, "text": st.text, "claim_type": st.claim_type,
-                            "relation": st.relation, "subject": st.subject,
-                            "object": st.object, "direction": st.direction,
-                            "evidence_level": st.evidence_level,
-                            "paper_id": st.source_paper_id} for st in stmts][:40],
+            "statements": [_stmt_d(st) for st in stmts[:40]],
             "papers": papers, "compound": compound, "structures": structures,
             "simulations": sims,
         }
@@ -376,6 +382,50 @@ def paper_detail(pid: str):
             raise HTTPException(404, "paper not found")
         return {**_paper_d(p), "abstract": p.abstract,
                 "statements": [_stmt_d(st) for st in p.statements]}
+
+
+@app.get("/api/papers/{pid}/sources/{source_id}")
+def paper_source(pid: str, source_id: str, format: Literal["text", "raw"] = "text"):
+    from .models import PaperSource
+    with get_session() as s:
+        source = s.get(PaperSource, source_id)
+        if source is None or source.paper_id != pid:
+            raise HTTPException(404, "paper source not found")
+        try:
+            path = verified_source_path(source, format=format)
+        except FileNotFoundError:
+            raise HTTPException(404, "retained source artifact is missing") from None
+        except (ValueError, OSError):
+            raise HTTPException(409, "retained source artifact failed integrity verification") from None
+        raw_xml = format == "raw" and source.kind == "full_text"
+        return FileResponse(
+            path, media_type="application/xml" if raw_xml else "text/plain",
+            filename=f"{source.id}.xml" if raw_xml else f"{source.id}.txt",
+            content_disposition_type="attachment" if format == "raw" else "inline",
+            headers={"X-Content-Type-Options": "nosniff",
+                     "Content-Security-Policy": "default-src 'none'; sandbox"},
+        )
+
+
+@app.post("/api/papers/{pid}/full-text")
+def paper_full_text(pid: str):
+    from .models import Paper
+    with get_session() as s:
+        p = s.get(Paper, pid)
+        if p is None:
+            raise HTTPException(404, "paper not found")
+        try:
+            source = acquire_full_text(s, p)
+            if source is None:
+                raise HTTPException(409, "PMC full text is unavailable or could not be retained; existing claims are unchanged")
+            if source.paper_id != pid or source.kind != "full_text":
+                raise HTTPException(409, "no verified full-text source was acquired")
+            verified_source_path(source, format="text")
+            verified_source_path(source, format="raw")
+        except (ValueError, OSError):
+            raise HTTPException(409, "retained full text failed integrity verification; existing claims are unchanged") from None
+        s.commit()
+        return _source_d(source)
 
 
 @app.get("/api/workspaces/{ws_id}/statements")

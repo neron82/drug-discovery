@@ -69,9 +69,6 @@ def _bootstrap(ws_id: str, extract_n: int):
                            .order_by(Paper.year.desc())).scalars().all()
         print(f"[seed] extracting up to {extract_n} papers (LLM: {llm.model})")
         for p in papers[:extract_n]:
-            if not p.abstract:
-                p.status = "skipped"
-                continue
             from .extract import process_paper
             process_paper(s, ws, p, llm)
             s.commit()

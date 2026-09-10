@@ -2,7 +2,7 @@
 /* Drug Discovery Platform — single-page dashboard logic. */
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
-function esc(s){ const d=document.createElement("div"); d.textContent = s==null?"":String(s); return d.innerHTML; }
+function esc(s){ const d=document.createElement("div"); d.textContent = s==null?"":String(s); return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 
 let state = { ws: null, workspaces: [], view: "overview", timers: [] };
 
@@ -25,6 +25,35 @@ async function api(path, opts={}) {
 
 function confBar(conf){ const c = (conf||0)*100; return `<div class="conf-bar"><div class="conf-fill" style="width:${c}%"></div></div>`; }
 function badge(lvl){ return `<span class="badge ${esc(lvl)}">${esc(lvl)}</span>`; }
+
+function sourceTextUrl(paperId, sourceId){
+  return `/api/papers/${encodeURIComponent(paperId)}/sources/${encodeURIComponent(sourceId)}?format=text`;
+}
+function sourceExcerpt(text, start, end){
+  let index = 0, excerpt = "";
+  for(const character of text){
+    if(index>=end) break;
+    if(index>=start) excerpt += character;
+    index++;
+  }
+  return excerpt;
+}
+function extractionScope(s){
+  const p = s.extraction_source || {kind:"abstract", legacy:true, truncated:null};
+  if(p.legacy) return "<div class='small muted'>Extraction: abstract-only (legacy); exact input and truncation were not recorded.</div>";
+  const kind = p.kind==="full_text" ? "retained full text" : "retained abstract";
+  const bounds = `characters ${p.start_char}–${p.end_char} of ${p.total_chars} (zero-based, end exclusive)`;
+  const truncation = p.truncated===true ? "TRUNCATED excerpt; not the whole source" : (p.truncated===false ? "complete retained text input" : "truncation unknown");
+  const link = p.source_id && s.paper_id ? ` · <a href="${esc(sourceTextUrl(s.paper_id,p.source_id))}" target="_blank" rel="noopener">retained source text</a>` : "";
+  return `<div class="small muted">Extraction: ${esc(kind)} · ${esc(bounds)} · ${esc(truncation)}${link}</div>`;
+}
+function externalSourceLink(url){
+  try {
+    const parsed = new URL(url);
+    if(!["https:", "http:"].includes(parsed.protocol)) return esc(url);
+    return `<a href="${esc(parsed.href)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+  } catch { return esc(url); }
+}
 
 /* ---------------- workspace/research ---------------- */
 async function refreshWorkspaces(){
@@ -144,7 +173,7 @@ async function openNodeCard(nid){
     document.getElementById("node-title").textContent=c.name+" ("+c.kind+")";
     const prov=e=>(e.provenance&&e.provenance.length)?e.provenance.map(p=>p.paper_id?p.paper_id.slice(0,8):(p.kind||"prov")).join(", "):"—";
     const edges=c.edges.map(e=>"<tr><td>"+(e.direction==="out"?"→":"←")+" <b>"+esc(e.neighbor)+"</b> <span class='badge'>"+esc(e.neighbor_kind)+"</span></td><td class='mono'>"+esc(e.type)+"</td><td>"+badge(e.evidence_level)+"</td><td class='small'>"+esc(e.knowledge_type)+"</td><td class='small mono'>"+esc(prov(e))+"</td></tr>").join("");
-    const stmts=c.statements.map(s=>"<div class='stmt'><span class='badge'>"+esc(s.claim_type)+"</span> "+esc(s.text)+"</div>").join("");
+    const stmts=c.statements.map(s=>"<div class='stmt'><span class='badge'>"+esc(s.claim_type)+"</span> "+esc(s.text)+extractionScope(s)+"</div>").join("");
     const papers=c.papers.map(p=>"<div class='paperline'><b>"+esc(p.title)+"</b> <span class='muted small'>"+esc(p.journal||"")+" "+(p.pmid?("PMID:"+p.pmid):"")+" "+(p.doi?("DOI:"+p.doi):"")+"</span></div>").join("");
     let html="";
     html+="<div class='kvrow'><span class='k'>evidence</span>"+badge(c.evidence_level)+" <span class='k'>knowledge_type</span><span class='mono'>"+esc(c.knowledge_type)+"</span> <span class='k'>conf</span>"+c.confidence+"</div>";
@@ -472,29 +501,99 @@ async function renderLiterature(){
   <div id="paper-detail" style="margin-top:16px"></div>`;
 }
 function badgeCls(s){ return s==="extracted"?"established":(s==="failed"?"computational":"speculative"); }
-function bindLiterature(){
-  $$(".paper-row").forEach(tr=> tr.onclick = async ()=>{
-    const d = await api("/papers/"+tr.dataset.pid);
-const stmts = (d.statements||[]).map(s=>`<div class="card stmt-src" style="margin:6px 0">
-      <div class="small">${esc(s.relation||"")} <span class="badge">${esc(s.claim_type||"")}</span> <span class="badge ${badgeCls(s.evidence_level)}">${esc(s.evidence_level)}</span>
-        <span class="mono muted small">${esc(s.species||"")}${s.model_context?" / "+esc(s.model_context):""} · conf ${s.confidence}${s.contradicted?" · CONTRADICTED":""}</span></div>
-      <div style="margin-top:4px">${esc(s.text)}</div>
-      <div class="small muted" style="margin-top:4px">entities: <b>${esc(s.subject||"")}</b> ${esc(s.direction||"")} <b>${esc(s.object||"")}</b></div>
-      <details class="srcbox"><summary>exact supporting source</summary>
-        <div class="small">${esc(d.title)}</div>
-        <div class="small mono">${esc(d.journal)} ${d.year||""} ${d.pmid?("PMID:"+d.pmid):""} ${d.doi?("DOI:"+d.doi):""}</div>
-        ${d.url?`<a href="${esc(d.url)}" target="_blank">${esc(d.url)}</a>`:""}
-        ${s.quotation?`<blockquote class="quote">${esc(s.quotation)}</blockquote>`:""}
-        ${(s.dose||s.endpoint||s.effect_size!=null)?`<div class="small mono muted">dose: ${esc(s.dose||"—")} · endpoint: ${esc(s.endpoint||"—")} · effect ${s.effect_size!=null?s.effect_size:"—"} ${esc(s.significance||"")}</div>`:""}
-      </details></div>`).join("") || "<div class='placeholder'>no claims extracted</div>";
-    $("#paper-detail").innerHTML = `<div class="card">
+async function showPaper(pid){
+  const panel = $("#paper-detail");
+  panel.dataset.pid = pid;
+  panel.innerHTML = "<div class='muted'>Loading paper…</div>";
+  try {
+    const d = await api("/papers/"+encodeURIComponent(pid));
+    if(!panel.isConnected || panel.dataset.pid!==pid) return;
+    const sources = (d.sources||[]).map(source=>{
+      const kind = source.kind==="full_text" ? "Full text" : "Abstract snapshot";
+      const availability = source.text_chars>0 ? `${source.text_chars} retained text characters` : "identifier metadata only; no evidence text";
+      const textUrl = sourceTextUrl(pid, source.id);
+      return `<div class="stmt"><span class="badge">${esc(kind)}</span> ${esc(availability)}
+        ${source.pmcid?` · ${esc(source.pmcid)}`:""}
+        · <a href="${esc(textUrl)}" target="_blank" rel="noopener">retained text</a>
+        · <a href="${esc(textUrl.replace("?format=text","?format=raw"))}">download raw ${source.kind==="full_text"?"XML":"abstract"}</a>
+        <details class="small muted"><summary>Retained source provenance</summary>
+          <div>${externalSourceLink(source.source_url)}</div>
+          <div>Fetched: ${esc(source.fetched_at)}</div>
+          <div class="mono" style="overflow-wrap:anywhere">Text SHA-256: ${esc(source.text_sha256)}<br>Raw SHA-256: ${esc(source.raw_sha256)}</div>
+        </details></div>`;
+    }).join("") || "<div class='muted'>No retained sources. Historical claims have not been upgraded to full-text extraction.</div>";
+    const stmts = (d.statements||[]).map(s=>{
+      const p = s.extraction_source||{};
+      const excerpt = !p.legacy && p.source_id && Number.isInteger(p.start_char) && Number.isInteger(p.end_char)
+        ? `<details class="extraction-excerpt" data-source="${esc(sourceTextUrl(pid,p.source_id))}" data-start="${p.start_char}" data-end="${p.end_char}"><summary>View exact extraction input excerpt</summary><pre class="small" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>` : "";
+      return `<div class="card stmt-src" style="margin:6px 0">
+        <div class="small">${esc(s.relation||"")} <span class="badge">${esc(s.claim_type||"")}</span> ${badge(s.evidence_level)}
+          <span class="mono muted small">${esc(s.species||"")}${s.model_context?" / "+esc(s.model_context):""} · conf ${esc(s.confidence)}${s.contradicted?" · CONTRADICTED":""}</span></div>
+        <div style="margin-top:4px">${esc(s.text)}</div>
+        <div class="small muted" style="margin-top:4px">entities: <b>${esc(s.subject||"")}</b> ${esc(s.direction||"")} <b>${esc(s.object||"")}</b></div>
+        ${extractionScope(s)}
+        <details class="srcbox"><summary>Supporting quotation and extraction provenance</summary>
+          <div class="small">${esc(d.title)}</div>
+          ${s.quotation?`<blockquote class="quote">${esc(s.quotation)}</blockquote>`:"<div class='muted'>No quotation recorded.</div>"}
+          ${p.input_sha256?`<div class="small mono muted" style="overflow-wrap:anywhere">Input SHA-256: ${esc(p.input_sha256)}<br>Retained text SHA-256: ${esc(p.text_sha256)}</div>`:""}
+          ${excerpt}
+          ${(s.dose||s.endpoint||s.effect_size!=null)?`<div class="small mono muted">dose: ${esc(s.dose||"—")} · endpoint: ${esc(s.endpoint||"—")} · effect ${esc(s.effect_size??"—")} ${esc(s.significance||"")}</div>`:""}
+        </details></div>`;
+    }).join("") || "<div class='placeholder'>no claims extracted</div>";
+    panel.innerHTML = `<div class="card">
       <h4>${esc(d.title)}</h4>
-      <div class="el"><span class="el-k">Journal</span><span>${esc(d.journal)} (${d.year||"?"})</span></div>
+      <div class="el"><span class="el-k">Journal</span><span>${esc(d.journal)} (${esc(d.year||"?")})</span></div>
       <div class="el"><span class="el-k">PMID</span><span class="mono">${esc(d.pmid)}</span></div>
       <div class="el"><span class="el-k">DOI</span><span class="mono">${esc(d.doi)}</span></div>
-      <div class="el"><span class="el-k">URL</span><span><a href="${esc(d.url)}" target="_blank">${esc(d.url)}</a></span></div>
+      <div class="el"><span class="el-k">URL</span><span>${externalSourceLink(d.url)}</span></div>
+      <h3>Original abstract</h3>
+      <div class="stmt" style="white-space:pre-wrap">${d.abstract?esc(d.abstract):"No abstract available."}</div>
+      <h3>Available retained sources</h3>
+      <div class="small muted">Availability is separate from extraction scope and evidence quality. Fetching full text does not re-extract or relabel existing claims.</div>
+      ${sources}
+      <button class="btn" id="fetch-full-text">Fetch / verify PMC full text</button>
+      <div id="full-text-result" class="small muted" role="status"></div>
       <h3 style="margin-top:12px">Extracted claims</h3>${stmts}</div>`;
-  });
+    $("#fetch-full-text",panel).onclick = async event=>{
+      const button = event.currentTarget;
+      const result = $("#full-text-result",panel);
+      button.disabled = true;
+      result.textContent = "Acquiring and verifying retained PMC full text…";
+      try {
+        await api("/papers/"+encodeURIComponent(pid)+"/full-text", {method:"POST"});
+        if(panel.isConnected && panel.dataset.pid===pid) {
+          await showPaper(pid);
+          if(panel.isConnected && panel.dataset.pid===pid && $("#full-text-result",panel))
+            $("#full-text-result",panel).textContent = "Full text retained and verified. Existing claims and extraction status are unchanged.";
+        }
+      } catch(err) {
+        result.textContent = "Full-text acquisition failed: "+String(err.message||err);
+      } finally { button.disabled = false; }
+    };
+    $$(".extraction-excerpt",panel).forEach(detail=>{
+      detail.ontoggle = async ()=>{
+        if(!detail.open || detail.dataset.loaded) return;
+        detail.dataset.loaded = "true";
+        const pre = $("pre",detail);
+        pre.textContent = "Loading verified retained text…";
+        try {
+          const response = await fetch(detail.dataset.source);
+          if(!response.ok) throw new Error(response.status+" "+await response.text());
+          const text = await response.text();
+          // Python offsets count Unicode code points, not JavaScript UTF-16 units.
+          pre.textContent = sourceExcerpt(text,Number(detail.dataset.start),Number(detail.dataset.end));
+        } catch(err) {
+          pre.textContent = "Could not read retained excerpt: "+String(err.message||err);
+          delete detail.dataset.loaded;
+        }
+      };
+    });
+  } catch(err) {
+    if(panel.isConnected && panel.dataset.pid===pid) panel.innerHTML = "<div class='muted'>Paper error: "+esc(String(err.message||err))+"</div>";
+  }
+}
+function bindLiterature(){
+  $$(".paper-row").forEach(tr=> tr.onclick = ()=>showPaper(tr.dataset.pid));
 }
 
 async function renderHypotheses(){
