@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import platform
+import secrets
 import shutil
 import subprocess
 import time
@@ -62,7 +63,9 @@ class DockingEngine:
     def __init__(self, bin_dir: str, cpu: int = 8, seed: int = 0):
         self.bin_dir = Path(bin_dir)
         self.cpu = cpu
-        self.seed = seed
+        # Vina treats zero as an automatic/random seed. Resolve it once before
+        # preparation so the recorded seed can reproduce both ligand and search.
+        self.seed = seed if seed != 0 else secrets.randbelow(2**31 - 1) + 1
 
     # -- one-shot, fully reproducible --------------------------------------
     def dock(self, *, cif_path, pocket, smiles, work_dir, exhaustiveness=24,

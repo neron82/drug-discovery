@@ -97,3 +97,130 @@ def test_prepare_receptor_strips():
     txt = out.read_text()
     assert any(l.startswith("ATOM") for l in txt.splitlines())
     assert not any(l.startswith("HETATM") for l in txt.splitlines()), "HETATM leaked"
+
+
+@pytest.fixture(autouse=True)
+def isolated_sim_db(tmp_path, monkeypatch):
+    """Keep every simulation test, including structure lookups, off live storage."""
+    from drugdiscovery import config, db
+
+    db_path = str(tmp_path / "simulation.db")
+    monkeypatch.setattr(config.settings.storage, "db_path", db_path)
+    monkeypatch.setattr(config.settings.storage, "data_dir", str(tmp_path))
+    monkeypatch.setattr(config.settings.storage, "artifact_dir", str(tmp_path / "artifacts"))
+    monkeypatch.setattr(config.settings.storage, "log_dir", str(tmp_path / "logs"))
+    monkeypatch.setattr(db, "_engine", None)
+    monkeypatch.setattr(db, "_SessionLocal", None)
+    connect = db._connect
+
+    def isolated_connect(path):
+        if path != db_path:
+            raise AssertionError("simulation tests must not connect to a live database")
+        return connect(path)
+
+    monkeypatch.setattr(db, "_connect", isolated_connect)
+    db.init_db()
+    try:
+        yield
+    finally:
+        db.get_engine().dispose()
+        db._engine = None
+        db._SessionLocal = None
+
+
+@pytest.fixture
+def reproduction_client(isolated_sim_db):
+    # api initializes its DB at import; isolated_sim_db must already be active.
+    from fastapi.testclient import TestClient
+    from drugdiscovery import api
+
+    # Do not enter the application lifespan: it resumes research-loop workers.
+    client = TestClient(api.app)
+    try:
+        yield client
+    finally:
+        client.close()
+
+
+def _record_replay_run(seed, kind="docking"):
+    from drugdiscovery import repos
+    from drugdiscovery.db import session_scope
+    from drugdiscovery.models import Compound, SimulationRun, Structure
+
+    with session_scope() as s:
+        ws = repos.create_workspace(s, "Replay regression", "test")
+        compound = Compound(canonical_name="finasteride", canonical_smiles=FINASTERIDE)
+        structure = Structure(workspace_id=ws.id, source="pdb", source_id="TEST")
+        s.add_all([compound, structure])
+        s.flush()
+        params = (
+            {"center": [1.25, -3.5, 7.0], "box_size": [24.5, 24.5, 24.5],
+             "exhaustiveness": 8, "n_poses": 3}
+            if kind == "docking" else {"steps": 120, "temperature": 310.0}
+        )
+        run = SimulationRun(
+            workspace_id=ws.id, kind=kind, structure_id=structure.id,
+            compound_id=compound.id if kind == "docking" else None,
+            software="autodock-vina" if kind == "docking" else "openmm",
+            seed=seed, params_json=params, status="done")
+        s.add(run)
+        s.flush()
+    return run
+
+
+def test_reproduce_legacy_zero_seed_rejects_without_queueing(reproduction_client):
+    from sqlalchemy import select
+    from drugdiscovery.db import get_session
+    from drugdiscovery.models import Experiment, SimulationRun
+
+    run = _record_replay_run(seed=0)
+    response = reproduction_client.post(f"/api/simulations/{run.id}/reproduce")
+
+    assert response.status_code == 409
+    with get_session() as s:
+        assert s.execute(select(Experiment)).scalars().all() == []
+        original = s.get(SimulationRun, run.id)
+        assert original.seed == 0
+        assert original.params_json == run.params_json
+
+
+def test_reproduce_recorded_seed_preserves_docking_inputs(reproduction_client):
+    from drugdiscovery.db import get_session
+    from drugdiscovery.models import Experiment, JobStatus
+    from drugdiscovery.sim.engine import DEFAULT_BOX_PADDING
+
+    run = _record_replay_run(seed=173205)
+    response = reproduction_client.post(f"/api/simulations/{run.id}/reproduce")
+
+    assert response.status_code == 200
+    with get_session() as s:
+        queued = s.get(Experiment, response.json()["experiment_id"])
+        assert queued.status == JobStatus.QUEUED.value
+        assert queued.kind == "docking"
+        params = queued.params_json
+        assert params["seed"] == run.seed
+        assert params["structure_id"] == run.structure_id
+        assert params["compound_id"] == run.compound_id
+        assert params["compound_smiles"] == FINASTERIDE
+        assert params["pocket"]["center"] == run.params_json["center"]
+        final_box = [params["pocket"]["size"] + DEFAULT_BOX_PADDING] * 3
+        assert final_box == run.params_json["box_size"]
+        assert params["exhaustiveness"] == run.params_json["exhaustiveness"]
+        assert params["n_poses"] == run.params_json["n_poses"]
+
+
+def test_reproduce_md_zero_seed_remains_replayable(reproduction_client):
+    from drugdiscovery.db import get_session
+    from drugdiscovery.models import Experiment, JobStatus
+
+    run = _record_replay_run(seed=0, kind="md")
+    response = reproduction_client.post(f"/api/simulations/{run.id}/reproduce")
+
+    assert response.status_code == 200
+    with get_session() as s:
+        queued = s.get(Experiment, response.json()["experiment_id"])
+        assert queued.status == JobStatus.QUEUED.value
+        assert queued.kind == "md"
+        assert queued.params_json == {
+            **run.params_json, "structure_id": run.structure_id, "seed": 0,
+        }

@@ -735,20 +735,25 @@ def reproduce_simulation(sid: str):
     it on the next cycle; hashes let the new run be compared against the old."""
     from .models import SimulationRun, Structure, Compound
     from sqlalchemy import select
+    from .sim.engine import DEFAULT_BOX_PADDING
     with session_scope() as s:
         r = s.get(SimulationRun, sid)
         if r is None:
             raise HTTPException(404, "simulation run not found")
         if r.status != "done":
             raise HTTPException(409, "only completed runs can be reproduced")
+        if r.kind == "docking" and r.seed == 0:
+            raise HTTPException(
+                409, "The effective random seed was not recorded for this docking run; "
+                     "exact reproduction is unavailable.")
         params = dict(r.params_json or {})
         params["structure_id"] = r.structure_id
         params["seed"] = r.seed
         if r.kind == "docking":
-            # recorded box = pocket size + engine padding (default 4.0 A) -> rebuild pocket
+            # Reconstruct the pocket so engine padding restores the recorded final box.
             if params.get("center") and params.get("box_size"):
                 params["pocket"] = {"center": params["center"],
-                                    "size": float(params["box_size"][0]) - 4.0}
+                                    "size": float(params["box_size"][0]) - DEFAULT_BOX_PADDING}
             if r.compound_id:
                 c = s.get(Compound, r.compound_id)
                 if c:
