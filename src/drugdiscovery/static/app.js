@@ -42,7 +42,7 @@ function extractionScope(s){
   const p = s.extraction_source || {kind:"abstract", legacy:true, truncated:null};
   if(p.legacy) return "<div class='small muted'>Extraction: abstract-only (legacy); exact input and truncation were not recorded.</div>";
   const kind = p.kind==="full_text" ? "retained full text" : "retained abstract";
-  const bounds = `characters ${p.start_char}–${p.end_char} of ${p.total_chars} (zero-based, end exclusive)`;
+  const bounds = `characters ${esc(p.start_char)}–${esc(p.end_char)} of ${esc(p.total_chars)} (zero-based, end exclusive)`;
   const truncation = p.truncated===true ? "TRUNCATED excerpt; not the whole source" : (p.truncated===false ? "complete retained text input" : "truncation unknown");
   const link = p.source_id && s.paper_id ? ` · <a href="${esc(sourceTextUrl(s.paper_id,p.source_id))}" target="_blank" rel="noopener">retained source text</a>` : "";
   return `<div class="small muted">Extraction: ${esc(kind)} · ${esc(bounds)} · ${esc(truncation)}${link}</div>`;
@@ -107,9 +107,17 @@ function bindResearch(){
 }
 
 /* ---------------- views ---------------- */
+let _renderSeq = 0;
 function render(){
-  const m = $("#main"); m.innerHTML = `<div class="placeholder">Loading…</div>`;
-  return renderView({view:state.view}).then(html=>{ m.innerHTML = html; bindView(state.view); });
+  const m = $("#main"); const seq = ++_renderSeq;
+  m.innerHTML = `<div class="placeholder">Loading…</div>`;
+  return renderView({view:state.view}).then(html=>{
+    if (seq !== _renderSeq) return;          // a newer render superseded this one
+    m.innerHTML = html; bindView(state.view);
+  }).catch(err=>{
+    if (seq !== _renderSeq) return;
+    m.innerHTML = `<div class="placeholder">Failed to load view: ${esc(String(err.message||err))}</div>`;
+  });
 }
 
 function renderView({view}){
@@ -239,10 +247,12 @@ async function cmpVs(){
   const modal=document.getElementById("cmp-vs"); modal.hidden=false;
   const body=document.getElementById("cmp-vs-body");
   body.innerHTML="<div class='muted'>Loading…</div>";
-  const cs=await Promise.all(ids.slice(0,4).map(id=>api(`/compounds/${id}`)));
-  const rows=[["name","name"],["formula","formula"],["MW","molmass"],["logP","logp"],["TPSA","tpsa"],["HBD","hbd"],["HBA","hba"],["rotatable","rotb"],["status","research_status"]];
-  body.innerHTML=`<table><thead><tr><th></th>${cs.map(c=>`<th><img class="struct sm" src="/api/compounds/${c.id}/svg"/><br>${esc(c.name)}</th>`).join("")}</tr></thead>
-   <tbody>${rows.map(([lbl,k])=>`<tr><td class="k">${lbl}</td>${cs.map(c=>`<td class="mono">${esc(String(c[k]??"—"))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  try{
+    const cs=await Promise.all(ids.slice(0,4).map(id=>api(`/compounds/${id}`)));
+    const rows=[["name","name"],["formula","formula"],["MW","molmass"],["logP","logp"],["TPSA","tpsa"],["HBD","hbd"],["HBA","hba"],["rotatable","rotb"],["status","research_status"]];
+    body.innerHTML=`<table><thead><tr><th></th>${cs.map(c=>`<th><img class="struct sm" src="/api/compounds/${c.id}/svg"/><br>${esc(c.name)}</th>`).join("")}</tr></thead>
+     <tbody>${rows.map(([lbl,k])=>`<tr><td class="k">${lbl}</td>${cs.map(c=>`<td class="mono">${esc(String(c[k]??"—"))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  }catch(err){ body.innerHTML="<div class='muted'>comparison error: "+esc(String(err.message||err))+"</div>"; }
 }
 
 function bindView(view){
@@ -340,20 +350,22 @@ function bindCompound(){
   const q=sel=>document.querySelector(sel);
   const btn=q("#btn-sim");
   if(!btn) return;
+  let simSeq = 0;
   btn.onclick = async ()=>{
     const smiles=q("#sim-smiles").value.trim();
     const seed=q("#sim-seed").value;
     const box=q("#sim-results");
     if(!smiles && !seed){ box.innerHTML=""; return; }
+    const seq = ++simSeq;
     box.innerHTML="searching…";
-    let cid="";
-    if(seed){
-      const all=await api(`/compounds`);
-      const hit=all.find(c=>c.name.toLowerCase()===seed.toLowerCase());
-      if(hit) cid=hit.id;
-    }
-    const where=cid?`/compounds/${cid}/similar`:`/compounds/${(await api(`/compounds`))[0]?.id}/similar?smiles=${encodeURIComponent(smiles)}`;
     try{
+      let cid="";
+      if(seed){
+        const all=await api(`/compounds`);
+        const hit=all.find(c=>c.name.toLowerCase()===seed.toLowerCase());
+        if(hit) cid=hit.id;
+      }
+      const where=cid?`/compounds/${cid}/similar`:`/compounds/${(await api(`/compounds`))[0]?.id}/similar?smiles=${encodeURIComponent(smiles)}`;
       let r=await api(where);
       const min=parseFloat(q("#sim-min").value||0);
       const rows=r.filter(x=>x.similarity>=min).map(x=>`<div class="row" style="gap:12px;align-items:center;border-bottom:1px solid #1c2230;padding:6px 0">
@@ -361,8 +373,9 @@ function bindCompound(){
         <span>${esc(x.name)}</span><span class="mono muted">${esc(x.formula)}</span>
         <span class="badge ${x.similarity>=0.6?'established':(x.similarity>=0.4?'probable':'speculative')}">${(x.similarity*100).toFixed(0)}%</span>
       </div>`).join("")||"<div class='muted'>no matches above threshold</div>";
+      if (seq !== simSeq) return;          // a newer search superseded this one
       box.innerHTML=rows;
-    }catch(e){ box.innerHTML="<span class='muted'>error: "+esc(e.message||e)+"</span>"; }
+    }catch(e){ if (seq === simSeq) box.innerHTML="<span class='muted'>error: "+esc(e.message||e)+"</span>"; }
   };
 }
 
@@ -382,12 +395,12 @@ async function renderStructures(){
     <div id="viewer-modal" class="modal" hidden><div class="modal-box">
       <div class="modal-head"><span id="viewer-title"></span><button class="btn" id="viewer-close">Close</button></div>
       <div id="viewer-3d" class="viewer-3d"></div>
-      <div class="modal-foot">Source: <span id="viewer-src"></span></div>
+
     </div></div>`;
 }
 
 let _3dmolLoaded = null;
-function load3dmol(){ if(!_3dmolLoaded) _3dmolLoaded = new Promise((res,rej)=>{const s=document.createElement('script');s.src='/static/vendor/3dmol.min.js';s.onload=res;s.onerror=()=>rej(new Error('3dmol load failed'));document.head.appendChild(s);}); return _3dmolLoaded; }
+function load3dmol(){ if(!_3dmolLoaded) _3dmolLoaded = new Promise((res,rej)=>{const s=document.createElement('script');s.src='/static/vendor/3dmol.min.js';s.onload=res;s.onerror=()=>{_3dmolLoaded=null;rej(new Error('3dmol load failed'));};document.head.appendChild(s);}); return _3dmolLoaded; }
 
 async function openViewer(sid, srcId, kind){
   const modal = document.getElementById('viewer-modal');
@@ -399,7 +412,7 @@ async function openViewer(sid, srcId, kind){
   try{
     await load3dmol();
     const meta = await api(`/structures/${sid}`);
-    const txt = await (await fetch(`/structures/${sid}/file`)).text();
+    const txt = await (await fetch(`/api/structures/${sid}/file`)).text();
     holder.innerHTML = '';
     const viewer = $3Dmol.createViewer(holder, {backgroundColor:'#0d1117'});
     viewer.addModel(txt, "mmcif");
@@ -443,12 +456,13 @@ async function renderSimulations(){
     const unit = isMd ? 'nm' : 'kcal/mol';
     const label = isMd ? 'stability (RMSD)' : 'score';
     return `<div class="struct-card">
-    <div class="struct-head"><span class="badge ${isMd?'speculative':'established'}">${esc(r.kind)}</span>
+    <div class="struct-head"><span class="badge ${badgeCls(r.status)}">${esc(r.kind)}</span>
       <b>${esc(r.compound_name||'protein')}</b> &middot; ${esc(r.software)} ${esc(r.software_version)}</div>
     <div class="meta">${label} ${r.score!=null?r.score.toFixed(3)+' '+unit:'—'} &middot; seed ${r.seed} &middot; ${r.runtime_s?r.runtime_s.toFixed(1)+'s':''} &middot; ${esc(r.hardware||'')} &middot; status ${esc(r.status)}</div>
     ${r.error?`<div class="lim">${esc(r.error)}</div>`:''}
     ${r.assumptions?`<div class="lim">${esc(r.assumptions)}</div>`:''}
     <button class="btn viewpose" data-sid="${r.id}" ${isMd||!r.pose_path?'disabled':''}>${isMd?'trajectory (npz)':'View pose in 3D'}</button>
+    <button class="btn repro" data-sid="${r.id}" ${r.status==='running'?'disabled':''}>Reproduce</button>
   </div>`}).join('') : `<div class="placeholder">No simulation runs yet — the research director schedules docking against structurally-covered targets during research cycles.</div>`;
   return `<h1>Simulations</h1>
     <div class="sub">Computational predictions — docking scores are NOT proof of biological activity. Each run records full reproducibility (software, version, seed, input hashes, pose artifact, runtime, hardware).</div>
@@ -467,8 +481,7 @@ async function openPoseViewer(sid, label){
   holder.innerHTML = "<div class='muted'>Loading viewer…</div>";
   try{
     await load3dmol();
-    const meta = await api(`/simulations/${sid}`);
-    const txt = await (await fetch(`/simulations/${sid}/pose`)).text();
+    const txt = await (await fetch(`/api/simulations/${sid}/pose`)).text();
     holder.innerHTML = '';
     const viewer = $3Dmol.createViewer(holder, {backgroundColor:'#0d1117'});
     viewer.addModel(txt, "pdbqt");
@@ -655,13 +668,13 @@ async function renderSystem(){
     <div class="card"><div class="k">Active research loops</div><div class="big">${s.active_research_loops}</div></div>
   </div>
   <div class="card" style="margin-top:12px"><div class="k">Storage</div><div class="mono small" style="margin-top:6px">${esc(s.storage?.db||"—")}</div></div>
-  ${await budgetPanel()}`;
+  ${await budgetPanel(s.budgets)}`;
 }
-async function budgetPanel(){
+async function budgetPanel(limits){
   if(!state.ws) return "";
   let w; try{ w = await api(`/workspaces/${state.ws.id}`); }catch(e){ return ""; }
   const st = w.state||{}; const b = st.budget||{}; const ctr = st.counters||{};
-  const lim = s.budgets||{};
+  const lim = limits||{};
   const pct=(n,m)=> m? Math.min(100,Math.round(100*(n||0)/m))+"%" : "∞";
   return `<div class="card" style="margin-top:12px"><div class="k">Compute budget (rolling 1h) — ${esc(w.name)}</div>
     <div class="kvrow"><span class="k">literature</span><span class="mono">${b.lit||0} / ${lim.max_lit_requests_per_hour??"∞"} (${pct(b.lit,lim.max_lit_requests_per_hour)})</span></div>

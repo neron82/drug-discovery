@@ -98,7 +98,9 @@ class DockingEngine:
         # receptor preparation (cached by content hash)
         rec_base = work / "receptor"
         rec_pdbqt = work / "receptor.pdbqt"
-        if not rec_pdbqt.exists():
+        if not rec_pdbqt.exists() or rec_pdbqt.stat().st_size == 0:
+            # (a cached-but-empty or partially written receptor.pdbqt must not
+            # be trusted — regenerate it instead of docking into a truncated file)
             raw = work / "protein_raw.pdb"
             prepare_receptor(cif_path, raw)
             r = subprocess.run(

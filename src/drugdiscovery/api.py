@@ -126,11 +126,6 @@ def _dt(v):
     return v.isoformat() if isinstance(v, datetime) else v
 
 
-def _node_d(n):
-    return {"id": n.id, "kind": n.kind, "canonical_name": n.canonical_name, "label": n.label,
-            "synonyms": n.synonyms, "evidence_level": n.evidence_level, "confidence": n.confidence,
-            "knowledge_type": n.knowledge_type, "summary": n.summary, "properties": n.properties}
-
 
 def _stmt_d(s):
     return {"id": s.id, "text": s.text, "claim_type": s.claim_type, "relation": s.relation,
@@ -410,7 +405,7 @@ def paper_source(pid: str, source_id: str, format: Literal["text", "raw"] = "tex
 @app.post("/api/papers/{pid}/full-text")
 def paper_full_text(pid: str):
     from .models import Paper
-    with get_session() as s:
+    with session_scope() as s:
         p = s.get(Paper, pid)
         if p is None:
             raise HTTPException(404, "paper not found")
@@ -424,7 +419,6 @@ def paper_full_text(pid: str):
             verified_source_path(source, format="raw")
         except (ValueError, OSError):
             raise HTTPException(409, "retained full text failed integrity verification; existing claims are unchanged") from None
-        s.commit()
         return _source_d(source)
 
 
@@ -641,6 +635,7 @@ def research_control(ws_id: str, body: ResearchAction):
             # Explicit stop: disable research and cancel all QUEUED work
             # (running work is left to finish — bounded by the stale-running
             # lease). History is preserved, never deleted.
+            repos.set_research_state(s, ws, "stopped")
             repos.set_research_enabled(s, ws, False)
             cancelled = repos.cancel_queued_experiments(s, ws.id, "explicit stop")
         else:
@@ -727,7 +722,16 @@ def structure_file(sid: str):
         r = s.get(Structure, sid)
     if r is None or not r.file_path:
         raise HTTPException(404, "structure file not found")
-    return FileResponse(r.file_path, media_type="chemical/x-cif", filename=f"{r.source_id}.cif")
+    path = Path(r.file_path)
+    if not path.is_absolute():
+        path = Path(settings.storage.artifact_dir) / path
+    try:
+        path.resolve().relative_to(Path(settings.storage.artifact_dir).resolve())
+    except ValueError:
+        raise HTTPException(409, "structure artifact path is outside the artifact root") from None
+    if not path.is_file():
+        raise HTTPException(404, "structure artifact is missing")
+    return FileResponse(path, media_type="chemical/x-cif", filename=f"{r.source_id}.cif")
 
 
 # ---------------------------------------------------------------------------

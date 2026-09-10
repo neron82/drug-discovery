@@ -52,12 +52,11 @@ class LLMProvider:
             "model": self.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "temperature": self.temperature if temperature is None else temperature,
-            "max_tokens": 4000,
+            "max_tokens": 8000,
             "stream": False,
         }
         if json_schema and settings.llm.json_mode:
             payload["response_format"] = {"type": "json_object"}
-        payload["max_tokens"] = max(payload["max_tokens"], 8000)
         if not settings.llm.enable_thinking:
             payload["enable_thinking"] = False  # suppress model chain-of-thought for speed + reliable JSON
         last_err = None

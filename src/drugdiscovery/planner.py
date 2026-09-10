@@ -18,11 +18,6 @@ from sqlalchemy import func, select
 
 log = logging.getLogger("dd.planner")
 
-KINDS = [
-    "literature_search", "paper_extraction", "contradiction_search",
-    "hypothesis_generation", "question_generation",
-]
-
 
 def compute_priority(weights, eig=0.0, importance=0.0, confimpact=0.0, cost=1.0):
     cost = max(0.05, float(cost))
@@ -162,15 +157,16 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
     n_contra = session.execute(select(Statement).where(Statement.workspace_id == ws_id)).scalars().all()
     contradicts = sum(1 for s in n_contra if s.properties.get("contradicted"))
     if contradicts > 0:
-        pk = _params_key({"topic": "contradictions"})
-        if not _already_queued(session, ws_id, "contradiction_search", pk):
+        pdict = {"topic": f"{ws.disease or ws.name} negative"}
+        pk = _params_key(pdict)
+        if not _already_queued(session, ws_id, "contradiction_search", pk, terminal=True):
             _create(
                 ws_id, "contradiction_search",
                 question="Search for contradicting/negative evidence",
                 reason="Actively attempt to falsify current claims",
                 expected_information_gain=0.6, scientific_importance=0.8, confidence_impact=0.7,
                 computational_cost=1.0, priority=compute_priority(weights, 0.6, 0.8, 0.7, 1.0),
-                params={"topic": f"{ws.disease or ws.name} negative"}, worker="skeptic")
+                params=pdict, worker="skeptic")
 
     # 5) open question generation
     if not state.get("open_questions"):

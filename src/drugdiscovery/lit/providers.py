@@ -40,9 +40,6 @@ class PaperRecord:
         return hashlib.sha256(blob).hexdigest()
 
 
-def _hash(s: str) -> str:
-    return hashlib.sha256(s.encode()).hexdigest()
-
 
 def normalize_pmcid(value) -> str:
     value = str(value or "").strip().upper()

@@ -92,7 +92,7 @@ def test_unsupported_or_empty_model_quotation_creates_no_source_facts(session, q
     extract.process_paper(session, ws, paper, llm)
 
     _assert_no_claim_graph(session)
-    assert paper.status == "extracted"
+    assert paper.status == "failed"
 
 
 def test_full_text_only_excerpt_records_exact_scope_and_rejects_omitted_quote(session, monkeypatch):

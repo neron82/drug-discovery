@@ -86,6 +86,7 @@ def generate_hypotheses(session, ws, llm: LLMProvider, limit: int = 3):
 
 
 def _draft(session, ws, llm, target, sup, contra, profile) -> Hypothesis | None:
+    disease = (ws.disease or "the target disease").replace("_", " ")
     sup_text = "\n".join(f"- {s.text}" for s in sup[:8]) or "(none)"
     contra_text = "\n".join(f"- {s.text}" for s in contra[:6]) or "(none yet)"
     user = (
@@ -95,10 +96,9 @@ def _draft(session, ws, llm, target, sup, contra, profile) -> Hypothesis | None:
         f"Evidence profile: overall_confidence={profile['overall_confidence']}, "
         f"independent_sources={profile['independent_sources']}, "
         f"contradiction_ratio={profile['contradiction_ratio']}\n\n"
-        "Draft one hypothesis focused on this target relevant to the clinical context ({disease}) of this workspace."
+        f"Draft one hypothesis focused on this target relevant to the clinical context ({disease}) of this workspace."
     )
-    disease = (ws.disease or "the target disease").replace("_", " ")
-    data = llm.chat_json(_SYSTEM.format(disease=disease), user, temperature=0.4)
+    data = llm.chat_json(_SYSTEM.replace("{disease}", disease), user, temperature=0.4)
     title = (data.get("title") or f"{target.canonical_name} mechanism hypothesis").strip()
     body = data.get("body", "")
     if not body:

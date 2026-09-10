@@ -61,6 +61,10 @@ def set_research_enabled(session: Session, ws: Workspace, enabled: bool) -> None
     ws.research_state = "running" if enabled else ("paused" if ws.research_state == "running" else ws.research_state)
 
 
+def set_research_state(session: Session, ws: Workspace, state: str) -> None:
+    ws.research_state = state
+
+
 # ---------------------------------------------------------------------------
 # Knowledge graph nodes
 # ---------------------------------------------------------------------------

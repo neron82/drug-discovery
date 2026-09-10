@@ -137,5 +137,7 @@ def critique_active(session, ws, llm, limit: int = 3) -> list[dict]:
     if out:
         repos.add_timeline(session, ws.id, "skeptic", "info",
                            f"Skeptic pass complete: {len(out)} hypotheses reviewed", {})
-    session.commit()
+    # No commit here: run_cycle persists results in its own short transaction
+    # after the experiment completes; committing mid-experiment would publish
+    # partial state before the experiment result is recorded.
     return out

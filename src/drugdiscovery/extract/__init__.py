@@ -119,6 +119,14 @@ def process_paper(session, ws, paper, llm: LLMProvider):
             log.warning("claim apply error (paper %s): %s", paper.id, e)
             continue
 
+    # A model reply whose claims all fail grounding/application is a data loss
+    # risk if labelled extracted: the planner would never revisit the paper.
+    if not claims or (made == 0 and len(claims) > 0):
+        paper.status = "failed"
+        repos.add_timeline(session, ws.id, "biologist", "warn",
+                           f"Extraction produced no grounded claims for '{paper.title[:70]}…'",
+                           data={"paper_id": paper.id, "n_claims": 0, "n_model_claims": len(claims)})
+        return paper
     paper.status = "extracted"
     paper.extractor = llm.model
     if made:

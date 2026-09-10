@@ -294,8 +294,8 @@ def _utc_iso() -> str:
 
 def _entity_counts(session, ws_id: str) -> dict:
     """Workspace-scoped entity tallies used for information-gain detection."""
-    from .models import Compound, Hypothesis, Paper, SimulationRun, Statement, Structure
-    from sqlalchemy import func
+    from .models import Compound, Hypothesis, Node, Paper, SimulationRun, Statement, Structure
+    from sqlalchemy import func, select
 
     def _cnt(model, scoped: bool = True) -> int:
         q = select(func.count()).select_from(model)
@@ -309,7 +309,19 @@ def _entity_counts(session, ws_id: str) -> dict:
         "structures": _cnt(Structure),
         "simulation_runs": _cnt(SimulationRun),
         "hypotheses": _cnt(Hypothesis),
-        "compounds": _cnt(Compound, scoped=False),  # compound catalogue is global
+        # Compounds wired into THIS workspace's KG. The catalogue is global:
+        # counting all rows let other workspaces' catalogue work reset this
+        # workspace's stagnation counter (spec 29 no-gain stop).
+        "compounds": session.execute(
+            select(func.count()).select_from(Compound).where(
+                Compound.id.in_(select(
+                    func.coalesce(Node.properties["compound_id"].as_string(), "")
+                ).where(
+                    Node.workspace_id == ws_id,
+                    Node.kind.in_(["compound", "drug"]),
+                ))
+            )
+        ).scalar_one(),
     }
 
 

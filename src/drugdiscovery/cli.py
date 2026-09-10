@@ -9,7 +9,7 @@ import sys
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("dd.cli")
 
-from .db import init_db, get_session  # noqa: E402
+from .db import init_db, get_session, session_scope  # noqa: E402
 from . import repos  # noqa: E402
 
 
@@ -130,7 +130,7 @@ def cmd_research(args):
     n = args.cycles or 1
     print(f"running {n} research cycle(s) on workspace {args.ws}")
     for i in range(1, n + 1):
-        with get_session() as s:
+        with session_scope() as s:
             ws = repos.get_workspace(s, args.ws)
             if ws:
                 ws.research_enabled = True
@@ -143,7 +143,7 @@ def cmd_research(args):
 def cmd_daemon(args):
     from .research import research_loop
     init_db()
-    with get_session() as s:
+    with session_scope() as s:
         ws = repos.get_workspace(s, args.ws)
         if ws:
             ws.research_enabled = True
