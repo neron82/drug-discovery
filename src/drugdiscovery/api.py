@@ -27,26 +27,78 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 # --- research loop manager (in-process) -----------------------------------
 _running_tasks: dict[str, asyncio.Task] = {}
 _stop_events: dict[str, asyncio.Event] = {}
+# The FastAPI event loop, captured at startup. Sync endpoints (start/pause/
+# stop) run in a threadpool worker with NO running loop, so loop tasks must
+# be scheduled onto this captured loop rather than asyncio.create_task'd here.
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _start_loop(ws_id: str):
+def _spawn_loop(ws_id: str) -> None:
+    """Spawn a FRESH research-loop task. MUST run on the event loop.
+
+    Each task gets its OWN stop-event and a UNIQUE drain-lease holder. The
+    unique holder makes stop->immediate-start safe: if the old task is still
+    finishing an in-flight cycle when a new task starts, the per-workspace
+    drain lease lets only ONE of them drain at a time, so they never interleave.
+    """
+    import uuid
     from .research import research_loop
-    if ws_id in _running_tasks and not _running_tasks[ws_id].done():
-        return False
     ev = asyncio.Event()
+    holder = f"api-loop:{ws_id}:{uuid.uuid4().hex[:8]}"
     _stop_events[ws_id] = ev
-    _running_tasks[ws_id] = asyncio.create_task(research_loop(ws_id, ev))
-    return True
+    _running_tasks[ws_id] = asyncio.create_task(research_loop(ws_id, ev, holder=holder))
 
 
-def _stop_loop(ws_id: str):
-    ev = _stop_events.get(ws_id)
-    if ev:
-        ev.set()
+def _start_on_loop(ws_id: str) -> None:
+    """Check-and-spawn, ATOMIC on the single-threaded event loop.
+
+    Two rapid worker-thread start requests both schedule this callback, but
+    they execute sequentially on the loop: the first spawns, the second sees
+    the freshly-spawned (active) task and does not spawn. A task whose
+    stop-event is set is "exiting" and is replaced; an active task is kept.
+    """
     task = _running_tasks.get(ws_id)
-    if task and not task.done():
-        # do not await hard; let it check the event
-        pass
+    ev = _stop_events.get(ws_id)
+    if task is not None and not task.done() and ev is not None and not ev.is_set():
+        return  # already actively draining
+    _spawn_loop(ws_id)
+
+
+def _start_loop(ws_id: str) -> bool:
+    """Ensure a loop is draining this workspace. Returns True if (re)started.
+
+    The authoritative check-and-spawn runs on the event loop (_start_on_loop);
+    the return value is a best-effort worker-thread view for the API response.
+    """
+    task = _running_tasks.get(ws_id)
+    ev = _stop_events.get(ws_id)
+    already_active = (task is not None and not task.done()
+                      and ev is not None and not ev.is_set())
+    try:
+        asyncio.get_running_loop()
+        _start_on_loop(ws_id)  # already on the event loop (e.g. startup resume)
+    except RuntimeError:
+        # threadpool worker (sync endpoint): schedule onto the captured loop
+        if _main_loop is None or _main_loop.is_closed():
+            raise RuntimeError("main event loop not available to start research loop")
+        _main_loop.call_soon_threadsafe(_start_on_loop, ws_id)
+    return not already_active
+
+
+def _stop_loop(ws_id: str) -> bool:
+    ev = _stop_events.get(ws_id)
+    if not ev:
+        return True
+    # Event.set() is not thread-safe; run it on the loop when called from a
+    # threadpool worker (the sync stop endpoint).
+    def _do_stop() -> None:
+        ev.set()
+    try:
+        asyncio.get_running_loop()
+        _do_stop()
+    except RuntimeError:
+        if _main_loop is not None and not _main_loop.is_closed():
+            _main_loop.call_soon_threadsafe(_do_stop)
     return True
 
 
@@ -128,6 +180,8 @@ _RECOVERED_AT_STARTUP = _recover_stale_jobs()
 @app.on_event("startup")
 async def resume_enabled_workspaces() -> None:
     """Resume enabled research workspaces after an API process restart."""
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()  # capture for threadpool start/stop
     with get_session() as s:
         ids = [w.id for w in repos.list_workspaces(s) if w.research_enabled]
     for ws_id in ids:
@@ -471,6 +525,15 @@ def queue(ws_id: str):
                  "result_summary": e.result_summary, "error": e.error} for e in rows]
 
 
+@app.get("/api/workspaces/{ws_id}/queue/metrics")
+def queue_metrics_endpoint(ws_id: str):
+    """Honest queue accounting: created/completed/failed/cancelled/skipped,
+    pending by kind, discovery-vs-retry split, newly-scheduled, and the live
+    drain-lease holder. Lets queue growth be attributed, not guessed."""
+    with get_session() as s:
+        return repos.queue_metrics(s, ws_id)
+
+
 @app.get("/api/workspaces/{ws_id}/timeline")
 def timeline(ws_id: str, limit: int = Query(50)):
     from .models import TimelineEntry
@@ -484,7 +547,7 @@ def timeline(ws_id: str, limit: int = Query(50)):
 
 @app.post("/api/workspaces/{ws_id}/search")
 def manual_search(ws_id: str, body: SearchIn):
-    with get_session() as s:
+    with session_scope() as s:
         ws = repos.get_workspace(s, ws_id)
         if not ws:
             raise HTTPException(404, "workspace not found")
@@ -501,27 +564,46 @@ def manual_search(ws_id: str, body: SearchIn):
 
 @app.post("/api/workspaces/{ws_id}/research")
 def research_control(ws_id: str, body: ResearchAction):
-    with get_session() as s:
+    act = body.action
+    if act == "cycle":
+        # run_cycle owns its own session/transaction — do NOT nest it inside
+        # an outer open transaction (nested-write hazard + stale ws).
+        from .research import run_cycle
+        res = run_cycle(ws_id, force=True)
+        with get_session() as s:
+            ws = repos.get_workspace(s, ws_id)
+            state = ws.research_state if ws else None
+        return {"state": state, "cycle": res}
+    # Do the DB mutation in its own transaction and COMMIT it BEFORE touching
+    # the loop. The loop's first iteration reads research_enabled; if the loop
+    # were spawned before this commit it could read the stale value and exit
+    # immediately (the stop->start race). So: mutate+commit, then control.
+    with session_scope() as s:
         ws = repos.get_workspace(s, ws_id)
         if not ws:
             raise HTTPException(404, "workspace not found")
-        act = body.action
+        cancelled = 0
         if act == "start":
             repos.set_research_enabled(s, ws, True)
-            started = _start_loop(ws_id)
-            return {"state": "running", "loop_started": started}
-        if act == "pause":
+        elif act == "pause":
             repos.set_research_enabled(s, ws, False)
-            return {"state": "paused"}
-        if act == "stop":
+        elif act == "stop":
+            # Explicit stop: disable research and cancel all QUEUED work
+            # (running work is left to finish — bounded by the stale-running
+            # lease). History is preserved, never deleted.
             repos.set_research_enabled(s, ws, False)
-            _stop_loop(ws_id)
-            return {"state": "stopped"}
-        if act == "cycle":
-            from .research import run_cycle
-            res = run_cycle(ws_id, force=True)
-            return {"state": ws.research_state, "cycle": res}
-        raise HTTPException(400, "unknown action")
+            cancelled = repos.cancel_queued_experiments(s, ws.id, "explicit stop")
+        else:
+            raise HTTPException(400, "unknown action")
+    # COMMITTED above. Now control the loop, outside the transaction.
+    if act == "start":
+        started = _start_loop(ws_id)
+        return {"state": "running", "loop_started": started}
+    if act == "pause":
+        return {"state": "paused"}
+    if act == "stop":
+        _stop_loop(ws_id)
+        return {"state": "stopped", "cancelled_queued": cancelled}
 
 
 @app.get("/api/workspaces/{ws_id}/activity")

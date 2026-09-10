@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import asyncio
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -298,10 +299,44 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False) -> dict:
-    """One research cycle. Returns a summary dict (or {"noop": true})."""
+def _entity_counts(session, ws_id: str) -> dict:
+    """Workspace-scoped entity tallies used for information-gain detection."""
+    from .models import Compound, Hypothesis, Paper, SimulationRun, Statement, Structure
+    from sqlalchemy import func
+
+    def _cnt(model, scoped: bool = True) -> int:
+        q = select(func.count()).select_from(model)
+        if scoped:
+            q = q.where(model.workspace_id == ws_id)
+        return session.execute(q).scalar_one()
+
+    return {
+        "papers": _cnt(Paper),
+        "statements": _cnt(Statement),
+        "structures": _cnt(Structure),
+        "simulation_runs": _cnt(SimulationRun),
+        "hypotheses": _cnt(Hypothesis),
+        "compounds": _cnt(Compound, scoped=False),  # compound catalogue is global
+    }
+
+
+def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False,
+              holder: str | None = None) -> dict:
+    """One research cycle. Returns a summary dict (or {"noop": true}).
+
+    Bounded-autonomy guarantees:
+      * single-drain lease — at most one holder runs a cycle at a time;
+      * stagnation stop — consecutive no-gain cycles pause the workspace.
+
+    ``holder`` identifies the drainer for the lease. When omitted (manual /
+    CLI / API-endpoint callers) a UNIQUE id is minted per invocation so two
+    concurrent manual drains cannot share a holder and both win the lease.
+    The persistent loop passes a stable per-workspace holder instead.
+    """
     from . import planner
     from .db import session_scope
+    if holder is None:
+        holder = f"manual:{uuid.uuid4().hex[:12]}"
     llm = llm or _mk_llm()
     with session_scope() as session:
         ws = repos.get_workspace(session, ws_id)
@@ -322,8 +357,22 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False) -
         if blocked and not force:
             return {"noop": True, "reason": blocked}
 
+        # single-drain lease: refuse to interleave with another live drainer
+        if not repos.acquire_drain_lease(session, ws, holder,
+                                         int(settings.research.drain_lease_seconds)):
+            other = repos.drain_lease_holder(session, ws_id)
+            log.info("WS %s: drain lease held by %s, skipping cycle", ws_id, other)
+            return {"noop": True, "reason": f"drain in progress (holder: {other})"}
+
         _budget_record(ws, ex.kind)
+        before = _entity_counts(session, ws_id)
         repos.mark_experiment(session, ex, JobStatus.RUNNING.value, worker=ex.worker)
+        # Commit NOW to release the SQLite write lock before the heavy work.
+        # Holding a transaction across a ~27s docking (or minutes of MD) would
+        # block every other writer (control endpoints, the drain counter) for
+        # the whole computation -> "database is locked" storms. The result is
+        # persisted in a fresh short transaction afterwards.
+        session.commit()
         summary, result, error = "", {}, ""
         started = time.time()
         try:
@@ -335,29 +384,64 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False) -
         finally:
             status = JobStatus.DONE.value if not error else JobStatus.FAILED.value
             repos.mark_experiment(session, ex, status, result_summary=summary, result_json=result, error=error)
+            # information gain: did this cycle add ANY new evidence/matter?
+            after = _entity_counts(session, ws_id)
+            gained = any(after[k] > before[k] for k in after)
             state = dict(ws.state_json or {})
             ctr = state.setdefault("counters", {})
             ctr["cycles"] = ctr.get("cycles", 0) + 1
+            state["consecutive_no_gain"] = 0 if gained else state.get("consecutive_no_gain", 0) + 1
             state["last_experiment"] = {"kind": ex.kind, "summary": summary, "ran_s": round(time.time() - started, 2)}
             ws.state_json = state
             ws.research_state = "running" if ws.research_enabled else ws.research_state
+            # stagnation stop: the loop is done learning — pause honestly
+            limit = int(settings.research.stagnation_limit)
+            if limit > 0 and state["consecutive_no_gain"] >= limit:
+                ws.research_enabled = False
+                repos.add_timeline(session, ws.id, "director", "warn",
+                                   f"Research paused: {state['consecutive_no_gain']} consecutive "
+                                   f"cycles without new evidence (stagnation stop). "
+                                   f"Re-enable research to resume.",
+                                   {"consecutive_no_gain": state["consecutive_no_gain"],
+                                    "stagnation_limit": limit})
+                summary = (f"{summary} | STAGNATION: paused after "
+                           f"{state['consecutive_no_gain']} no-gain cycles")
+            repos.release_drain_lease(session, ws, holder)
         import gc  # docking loads gemmi/RDKit structures; free them between cycles
         gc.collect()  # (API lived in a ~4GB cgroup scope and was OOM-killed twice)
         return {"kind": ex.kind, "summary": summary, "error": error or None,
                 "elapsed_s": round(time.time() - started, 2)}
 
 
-async def research_loop(ws_id: str, stop_event: asyncio.Event):
-    """Continuous loop while workspace enabled and stop not set."""
+async def research_loop(ws_id: str, stop_event: asyncio.Event,
+                        holder: str | None = None):
+    """Continuous loop while workspace enabled and stop not set.
+
+    Exits cleanly when the workspace is paused (user pause/stop or stagnation
+    stop) so the asyncio task is freed; a later "start" spawns a fresh loop.
+    The enabled flag is checked at the TOP of every iteration, so a loop
+    spawned after a stop (race) exits before draining anything.
+    """
     llm = _mk_llm()
     sleep_s = settings.research.loop_sleep_seconds
+    loop_holder = holder or f"api-loop:{ws_id}"
     while not stop_event.is_set():
+        # Honor the enabled flag every iteration (stop/pause/stagnation set it
+        # False). Checked BEFORE draining so a raced spawn exits cleanly.
+        with get_session() as s:
+            ws = repos.get_workspace(s, ws_id)
+            if ws is None or not ws.research_enabled:
+                log.info("WS %s: research disabled, loop exiting", ws_id)
+                return
         try:
-            r = run_cycle(ws_id, llm)
+            # run_cycle is synchronous and blocks ~27s (docking) to minutes
+            # (MD). Offload to a worker thread so the event loop stays
+            # responsive (API startup, control endpoints, status).
+            r = await asyncio.to_thread(run_cycle, ws_id, llm, holder=loop_holder)
             if r.get("noop"):
-                await asyncio.sleep(sleep_s)
-                continue
-            log.info("cycle %s: %s", ws_id, r)
+                log.info("WS %s: cycle noop (%s)", ws_id, r.get("reason"))
+            else:
+                log.info("WS %s: cycle done: %s", ws_id, r.get("summary"))
         except Exception:
             log.exception("research cycle error %s", ws_id)
         await asyncio.sleep(sleep_s)

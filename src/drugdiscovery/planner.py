@@ -63,7 +63,7 @@ def _focus_query(cfg: dict) -> str:
     return "(" + " OR ".join(parts) + ")"
 
 def _params_key(p: dict) -> str:
-    return str(sorted((k, str(v)) for k, v in p.items()))
+    return repos.params_key(p)
 
 
 def paper_counts(session, ws_id):
@@ -82,8 +82,18 @@ def ensure_pipeline(session, ws, weights=None) -> list[Experiment]:
     safety_cap = int(settings.research.cycle_safety_cap)
 
     def _create(*args, **kwargs):
-        """Create at most cycle_safety_cap experiments in this planning pass."""
+        """Create at most cycle_safety_cap experiments in this planning pass,
+        and never re-schedule an identity that already burned its retry
+        budget (bounded autonomy: failures converge, they don't loop)."""
         if safety_cap > 0 and len(created) >= safety_cap:
+            return None
+        kind = args[1] if len(args) > 1 else kwargs.get("kind")
+        params = kwargs.get("params") or {}
+        n_fail = repos.count_failures(session, ws_id, kind, _params_key(params))
+        retry_limit = int(settings.research.max_retries_per_kind)
+        if retry_limit > 0 and n_fail >= retry_limit:
+            log.info("WS %s: %s retry limit reached (%d failures), not re-scheduling",
+                     ws_id, kind, n_fail)
             return None
         ex = repos.create_experiment(session, *args, **kwargs)
         created.append(ex)

@@ -43,6 +43,15 @@ class ResearchConfig(BaseModel):
     cycle_safety_cap: int = 4
     max_pending_experiments: int = 64
     stale_running_after_minutes: int = 180
+    # Bounded autonomy: per-(kind,params) retry ceiling. After this many FAILED
+    # attempts the planner stops re-scheduling the identical job (convergence).
+    max_retries_per_kind: int = 2
+    # Stagnation stop: pause the workspace after this many consecutive cycles
+    # that produced no new evidence/compounds/structures/statements/runs.
+    stagnation_limit: int = 12
+    # Drain lease: a workspace may be drained by only ONE holder at a time
+    # (API loop or manual script). Lease expires if the holder dies.
+    drain_lease_seconds: int = 300
     budgets: Budgets = Budgets()
 
 
@@ -136,7 +145,9 @@ def load_settings() -> Settings:
         cycle_safety_cap=int(res.get("cycle_safety_cap", 4)),
         max_pending_experiments=int(res.get("max_pending_experiments", 64)),
         stale_running_after_minutes=int(res.get("stale_running_after_minutes", 180)),
-        budgets=Budgets(**(res.get("budgets", {}) or {})),
+        max_retries_per_kind=int(res.get("max_retries_per_kind", 2)),
+        stagnation_limit=int(res.get("stagnation_limit", 12)),
+        drain_lease_seconds=int(res.get("drain_lease_seconds", 300)),
     )
     return Settings(api=api_c, storage=st_c, llm=llm_c, embeddings=emb_c, literature=lit_c, research=res_c)
 

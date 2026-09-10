@@ -9,8 +9,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import DateTime, String, func, select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import bindparam, column
 
 from .models import (
     Compound, Edge, Experiment, Hypothesis, JobStatus, KnowledgeType, Node, Paper, Statement,
@@ -296,6 +297,184 @@ def recover_stale_experiments(session: Session, *, stale_after_minutes: int,
         log.warning("Recovered %d stale running experiment(s)%s", len(stale),
                     f" in workspace {workspace_id}" if workspace_id else "")
     return stale
+
+
+# ---------------------------------------------------------------------------
+# Bounded autonomy: retries, cancellation, metrics, drain lease
+# ---------------------------------------------------------------------------
+def params_key(p: Optional[dict]) -> str:
+    """Canonical, order-independent fingerprint of experiment params.
+
+    ONE implementation feeds every dedup/retry guard and every stored
+    params dict — a separately computed key can drift from stored params
+    and silently defeat dedup (see dbea0c4 / 9b101e4).
+    """
+    return str(sorted((k, str(v)) for k, v in (p or {}).items()))
+
+
+def count_failures(session: Session, ws_id: str, kind: str, pkey: str) -> int:
+    """Number of FAILED attempts for one (kind, params) identity."""
+    rows = session.execute(select(Experiment).where(
+        Experiment.workspace_id == ws_id, Experiment.kind == kind,
+        Experiment.status == JobStatus.FAILED.value,
+    )).scalars().all()
+    return sum(1 for r in rows if params_key(r.params_json or {}) == pkey)
+
+
+def cancel_queued_experiments(session: Session, ws_id: str, reason: str) -> int:
+    """Cancel all queued (not yet running) experiments for a workspace.
+
+    Explicit stop semantics: queued work is discarded with provenance;
+    history is preserved (status=cancelled, never deleted). Running work
+    is left to finish — it is bounded by the stale-running lease.
+    """
+    rows = session.execute(select(Experiment).where(
+        Experiment.workspace_id == ws_id,
+        Experiment.status == JobStatus.QUEUED.value,
+    )).scalars().all()
+    for ex in rows:
+        lifecycle = dict(ex.result_json or {})
+        lifecycle["cancellation"] = {"at": now().isoformat(), "reason": reason}
+        ex.result_json = lifecycle
+        ex.status = JobStatus.CANCELLED.value
+        ex.error = f"Cancelled: {reason}"
+        ex.result_summary = f"Cancelled: {reason}"
+        ex.finished_at = now()
+    if rows:
+        log.info("Cancelled %d queued experiment(s) in workspace %s", len(rows), ws_id)
+    return len(rows)
+
+
+def queue_metrics(session: Session, ws_id: str) -> dict:
+    """Honest queue accounting: by status, by kind, and lifecycle totals.
+
+    Distinguishes what was created vs completed vs failed vs cancelled vs
+    skipped, attributes queue growth (newly scheduled in the last hour),
+    separates NEW DISCOVERY from RETRY (maintenance re-runs of a previously
+    failed identity), and reports the live drain-lease holder — so queue
+    behaviour can be attributed rather than guessed at.
+    """
+    rows = session.execute(select(Experiment).where(
+        Experiment.workspace_id == ws_id)).scalars().all()
+    by_status: dict[str, int] = {}
+    pending_by_kind: dict[str, int] = {}
+    failed_identities = set()
+    for ex in rows:
+        by_status[ex.status] = by_status.get(ex.status, 0) + 1
+        if ex.status == JobStatus.FAILED.value:
+            failed_identities.add((ex.kind, params_key(ex.params_json or {})))
+    now_dt = now()
+    newly = 0
+    discovery = 0
+    retry = 0
+    for ex in rows:
+        created = ex.created_at
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created is not None and now_dt - created <= timedelta(hours=1):
+            newly += 1
+        if ex.status in (JobStatus.QUEUED.value, JobStatus.RUNNING.value):
+            pending_by_kind[ex.kind] = pending_by_kind.get(ex.kind, 0) + 1
+            # retry = a FAILED attempt with the identical (kind, params)
+            # already exists; everything else pending is new discovery.
+            if (ex.kind, params_key(ex.params_json or {})) in failed_identities:
+                retry += 1
+            else:
+                discovery += 1
+    pending = by_status.get(JobStatus.QUEUED.value, 0) + by_status.get(JobStatus.RUNNING.value, 0)
+    return {
+        "total": len(rows),
+        "pending": pending,
+        "by_status": by_status,
+        "pending_by_kind": pending_by_kind,
+        "created": len(rows),
+        "completed": by_status.get(JobStatus.DONE.value, 0),
+        "failed": by_status.get(JobStatus.FAILED.value, 0),
+        "cancelled": by_status.get(JobStatus.CANCELLED.value, 0),
+        "skipped": by_status.get(JobStatus.SKIPPED.value, 0),
+        "newly_scheduled_last_hour": newly,
+        "pending_discovery": discovery,
+        "pending_retry": retry,
+        "lease_holder": drain_lease_holder(session, ws_id),
+    }
+
+
+# Atomic single-drain lease. The claim is a conditional upsert: INSERT wins
+# on an empty lease; ON CONFLICT DO UPDATE wins only when the existing lease
+# is expired or already held by the same holder. SQLite serialises the
+# statement, so two processes racing on an empty/expired lease cannot both
+# win. A dead holder cannot wedge the workspace — its lease expires and the
+# next claimant takes over.
+_DRAIN_CLAIM = text("""
+    INSERT INTO drain_leases (workspace_id, holder, acquired_at, expires_at)
+    VALUES (:ws_id, :holder, :acquired, :expires)
+    ON CONFLICT (workspace_id) DO UPDATE SET
+        holder = excluded.holder,
+        acquired_at = excluded.acquired_at,
+        expires_at = excluded.expires_at
+    WHERE drain_leases.expires_at < excluded.acquired_at
+       OR drain_leases.holder = excluded.holder
+""").bindparams(
+    bindparam("acquired", type_=DateTime(timezone=True)),
+    bindparam("expires", type_=DateTime(timezone=True)),
+)
+_DRAIN_RELEASE = text(
+    "DELETE FROM drain_leases WHERE workspace_id = :ws_id AND holder = :holder"
+)
+_DRAIN_SELECT = text(
+    "SELECT holder, expires_at FROM drain_leases WHERE workspace_id = :ws_id"
+).columns(
+    column("holder", String),
+    column("expires_at", DateTime(timezone=True)),
+)
+
+
+def acquire_drain_lease(session: Session, ws: Workspace, holder: str,
+                        lease_seconds: int) -> bool:
+    """Atomically claim the single-drain lease for a workspace.
+
+    Returns True if the lease is now held by ``holder``. Callers must run
+    this inside the same transaction as the cycle it guards, so a rolled-
+    back cycle also rolls back its claim.
+    """
+    now_dt = now()
+    expires_dt = now_dt + timedelta(seconds=max(30, lease_seconds))
+    res = session.execute(_DRAIN_CLAIM, {
+        "ws_id": ws.id, "holder": holder,
+        "acquired": now_dt, "expires": expires_dt,
+    })
+    return res.rowcount > 0
+
+
+def release_drain_lease(session: Session, ws: Workspace, holder: str) -> None:
+    """Release the drain lease if (and only if) we hold it."""
+    session.execute(_DRAIN_RELEASE, {"ws_id": ws.id, "holder": holder})
+
+
+def _aware_utc(v) -> Optional[datetime]:
+    """Normalise a possibly-naive datetime or ISO string to an aware UTC datetime.
+
+    Defensive: typed result columns yield datetimes, but a raw/untyped read
+    yields the stored ISO string — both must parse without crashing.
+    """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        v = datetime.fromisoformat(v)
+    if v.tzinfo is None:
+        v = v.replace(tzinfo=timezone.utc)
+    return v
+
+
+def drain_lease_holder(session: Session, ws_id: str) -> Optional[str]:
+    """Current live lease holder, or None if the lease is free/expired."""
+    row = session.execute(_DRAIN_SELECT, {"ws_id": ws_id}).mappings().first()
+    if not row:
+        return None
+    expires = _aware_utc(row["expires_at"])
+    if expires is None or now() >= expires:
+        return None
+    return row["holder"]
 
 
 # ---------------------------------------------------------------------------

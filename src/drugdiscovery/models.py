@@ -359,6 +359,26 @@ class TimelineEntry(Base):
 
 
 # ---------------------------------------------------------------------------
+# Drain lease — single-writer guarantee for workspace research cycles
+# ---------------------------------------------------------------------------
+class DrainLease(Base):
+    """One row per workspace: who may run research cycles right now.
+
+    The claim is an atomic conditional upsert (INSERT ... ON CONFLICT
+    DO UPDATE ... WHERE lease expired or same holder), so two processes
+    racing on an empty/expired lease cannot both win — SQLite serialises
+    the statement. This is the enforcement point for "no concurrent
+    drains for the same workspace"; state_json mirrors it for observability.
+    """
+    __tablename__ = "drain_leases"
+
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True)
+    holder: Mapped[str] = mapped_column(String(120))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+# ---------------------------------------------------------------------------
 # Compounds (Phase 2 — placeholder schema so structure arrives early)
 # ---------------------------------------------------------------------------
 class Compound(Base):
