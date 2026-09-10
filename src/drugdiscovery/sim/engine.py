@@ -33,6 +33,13 @@ ENGINE = "autodock-vina"
 ENGINE_VERSION = "1.2.7"
 DEFAULT_EXHAUSTIVENESS = 24
 DEFAULT_N_POSES = 9
+# Maximum docking-box edge (Angstrom) before compute_vina_maps is refused.
+# A whole-protein blind box on a large structure makes the box edge huge; the
+# Vina map grid scales with box volume x atom-type maps, so an unbounded box
+# exhausts memory (observed: ~40 GiB RSS, process killed). Pocket-targeted
+# boxes (pocket_from_ligand) are ~15-25 A and pass comfortably. 40 A allows
+# small/medium whole-protein blind docking while bounding the map grid.
+MAX_BOX_EDGE = 40.0
 
 
 def _sha256(path: Path) -> str:
@@ -66,6 +73,22 @@ class DockingEngine:
         work.mkdir(parents=True, exist_ok=True)
         t0 = time.time()
 
+        # HARD BOX GUARD (fail fast, before any prep/allocation): a whole-protein
+        # blind box (pocket_blind on a large structure) makes the box edge huge;
+        # compute_vina_maps allocates a grid proportional to box volume x
+        # atom-type maps, so an unbounded box exhausts memory (observed: ~40 GiB
+        # RSS, process killed). Refuse explicitly with provenance. Pocket-targeted
+        # boxes (pocket_from_ligand) are ~15-25 A and pass comfortably.
+        box_edge = float(pocket.get("size", 15.0)) + box_padding
+        if box_edge > MAX_BOX_EDGE:
+            raise ValueError(
+                f"docking box edge {box_edge:.1f} A exceeds the "
+                f"{MAX_BOX_EDGE:.0f} A safety limit (source="
+                f"{pocket.get('source', '?')}); a whole-protein blind box this "
+                f"large would allocate an unbounded Vina map grid and exhaust "
+                f"memory. Use a co-crystal-ligand pocket or a smaller target "
+                f"region.")
+
         # receptor preparation (cached by content hash)
         rec_base = work / "receptor"
         rec_pdbqt = work / "receptor.pdbqt"
@@ -91,11 +114,11 @@ class DockingEngine:
         if center is None:
             center = pocket["center"]
 
+        box_size = [box_edge] * 3
         from vina import Vina
         v = Vina(sf_name="vina", seed=self.seed, cpu=self.cpu)
         v.set_receptor(str(rec_pdbqt))
         v.set_ligand_from_file(str(lig_pdbqt))
-        box_size = [pocket.get("size", 15.0) + box_padding] * 3
         v.compute_vina_maps(center=[float(c) for c in center], box_size=box_size)
         v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses)
         score = float(v.score()[0])   # [0] = total affinity (kcal/mol)

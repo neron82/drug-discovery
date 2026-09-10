@@ -425,3 +425,33 @@ def test_stop_then_immediate_start_respawns(monkeypatch):
     assert len(holders) == 2, f"expected 2 spawned tasks, got {len(holders)}"
     assert holders[0] != holders[1], "holders must be unique per task"
     assert all(h.startswith("api-loop:wsA:") for h in holders)
+def test_docking_box_guard_refuses_oversized_blind_box(tmp_path):
+    """A whole-protein blind box (edge > MAX_BOX_EDGE) must be refused with
+    explicit provenance BEFORE any Vina map allocation — this is the guard
+    against the ~40 GiB RSS runaway that forced the API to be killed.
+
+    * oversized blind box (size 80 A -> edge 84 A > 40 A) -> ValueError
+    * normal pocket-targeted box (size 18 A -> edge 22 A < 40 A) -> must NOT
+      trip the guard (it proceeds to receptor prep, which fails for a fake CIF
+      with a different, expected error)
+    """
+    from drugdiscovery.sim.engine import DockingEngine, MAX_BOX_EDGE
+    assert MAX_BOX_EDGE == 40.0
+    eng = DockingEngine(bin_dir=str(tmp_path / "bin"), cpu=2, seed=0)
+    fake_cif = str(tmp_path / "fake.cif")
+
+    # 1. oversized blind box -> refused with the box-guard error
+    big = {"center": [0.0, 0.0, 0.0], "size": 80.0, "source": "blind"}
+    with pytest.raises(ValueError, match="exceeds the"):
+        eng.dock(cif_path=fake_cif, pocket=big, smiles="CCO",
+                 work_dir=str(tmp_path / "work_big"))
+
+    # 2. normal pocket-targeted box -> must NOT trip the box guard
+    ok = {"center": [0.0, 0.0, 0.0], "size": 18.0, "source": "ligand"}
+    try:
+        eng.dock(cif_path=fake_cif, pocket=ok, smiles="CCO",
+                 work_dir=str(tmp_path / "work_ok"))
+    except ValueError as e:
+        assert "exceeds the" not in str(e), "normal box must not trip the guard"
+    except Exception:
+        pass  # receptor/ligand prep failure is expected for a fake CIF
