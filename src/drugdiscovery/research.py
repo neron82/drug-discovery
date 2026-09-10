@@ -413,26 +413,39 @@ def run_cycle(ws_id: str, llm: LLMProvider | None = None, force: bool = False,
                 "elapsed_s": round(time.time() - started, 2)}
 
 
+def _workspace_enabled(ws_id: str) -> bool:
+    """Off-loop helper: True iff the workspace exists and research is enabled.
+
+    Runs in a worker thread (via asyncio.to_thread) so the SQLite read never
+    blocks the event loop — a contention window here would stall status and
+    control requests for the whole cycle.
+    """
+    with get_session() as s:
+        ws = repos.get_workspace(s, ws_id)
+        return ws is not None and ws.research_enabled
+
+
 async def research_loop(ws_id: str, stop_event: asyncio.Event,
                         holder: str | None = None):
     """Continuous loop while workspace enabled and stop not set.
 
     Exits cleanly when the workspace is paused (user pause/stop or stagnation
     stop) so the asyncio task is freed; a later "start" spawns a fresh loop.
-    The enabled flag is checked at the TOP of every iteration, so a loop
-    spawned after a stop (race) exits before draining anything.
+    The enabled flag is checked at the TOP of every iteration (off the event
+    loop), so a loop spawned after a stop (race) exits before draining anything.
+    All blocking work (DB reads, run_cycle) runs in worker threads; the event
+    loop only awaits, so status/control requests stay responsive.
     """
     llm = _mk_llm()
     sleep_s = settings.research.loop_sleep_seconds
     loop_holder = holder or f"api-loop:{ws_id}"
     while not stop_event.is_set():
         # Honor the enabled flag every iteration (stop/pause/stagnation set it
-        # False). Checked BEFORE draining so a raced spawn exits cleanly.
-        with get_session() as s:
-            ws = repos.get_workspace(s, ws_id)
-            if ws is None or not ws.research_enabled:
-                log.info("WS %s: research disabled, loop exiting", ws_id)
-                return
+        # False). OFF the event loop; checked BEFORE draining so a raced spawn
+        # exits cleanly.
+        if not await asyncio.to_thread(_workspace_enabled, ws_id):
+            log.info("WS %s: research disabled, loop exiting", ws_id)
+            return
         try:
             # run_cycle is synchronous and blocks ~27s (docking) to minutes
             # (MD). Offload to a worker thread so the event loop stays
@@ -444,4 +457,9 @@ async def research_loop(ws_id: str, stop_event: asyncio.Event,
                 log.info("WS %s: cycle done: %s", ws_id, r.get("summary"))
         except Exception:
             log.exception("research cycle error %s", ws_id)
-        await asyncio.sleep(sleep_s)
+        # Interruptible sleep: a stop frees the task promptly instead of
+        # lingering for the full interval.
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=sleep_s)
+        except asyncio.TimeoutError:
+            pass
