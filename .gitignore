@@ -13,3 +13,6 @@ logs/
 
 # env
 .env
+
+# internal operator notes (local only)
+HANDOFF_*.md
